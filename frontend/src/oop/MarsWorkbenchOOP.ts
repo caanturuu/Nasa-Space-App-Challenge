@@ -18,6 +18,7 @@ import {
   ConditionScenario,
   getTelemetrySnapshot,
   MarsTelemetrySnapshot,
+  RealWeather,
 } from "@/lib/marsTelemetry";
 import { getTerrainGrid } from "@/lib/marsTerrain";
 
@@ -441,8 +442,11 @@ export class SolarEphemerisModel {
   private readonly samples: SunAnglePoint[];
   public readonly currentHour = 13.4; // 13:24 LMST
 
-  constructor(latDeg = 18.4446, lonDeg = 77.4509) {
-    this.samples = computeMarsSunAngles(latDeg, lonDeg);
+  constructor(latDeg = 18.4446, lonDeg = 77.4509, realSamples?: SunAnglePoint[] | null) {
+    this.samples =
+      realSamples && realSamples.length >= 2
+        ? realSamples
+        : computeMarsSunAngles(latDeg, lonDeg);
   }
 
   public getSamples(): SunAnglePoint[] {
@@ -603,6 +607,18 @@ export class EVARoutePlannerController {
     let maxSlopeSeen = 0;
     let peakSlopeDistanceKm = 0;
 
+    // Cap total profile samples so very long legs (e.g. 5000+ km) stay renderable.
+    let approxLenM = 0;
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      approxLenM += marsDistanceM(
+        waypoints[i].lon,
+        waypoints[i].lat,
+        waypoints[i + 1].lon,
+        waypoints[i + 1].lat
+      );
+    }
+    const sampleStepM = Math.max(45, approxLenM / 480);
+
     for (let i = 0; i < waypoints.length - 1; i++) {
       const from = waypoints[i];
       const to = waypoints[i + 1];
@@ -658,7 +674,7 @@ export class EVARoutePlannerController {
         const [lon1, lat1] = legCoords[k];
         const [lon2, lat2] = legCoords[k + 1];
         const segD = marsDistanceM(lon1, lat1, lon2, lat2);
-        const subSteps = Math.max(3, Math.ceil(segD / 45));
+        const subSteps = Math.min(600, Math.max(3, Math.ceil(segD / sampleStepM)));
 
         let subLegPeakSlope = 0;
         for (let s = 0; s <= subSteps; s++) {
@@ -781,9 +797,12 @@ export class EVARoutePlannerController {
     );
     const hazardPct = Math.max(0, 100 - safePct - cautionPct);
 
-    const elevs = profileSamples.map((p) => p.elevationM);
-    const minElevationM = elevs.length > 0 ? Math.min(...elevs) : -2568;
-    const maxElevationM = elevs.length > 0 ? Math.max(...elevs) : -2485;
+    let minElevationM = profileSamples.length > 0 ? profileSamples[0].elevationM : -2568;
+    let maxElevationM = profileSamples.length > 0 ? profileSamples[0].elevationM : -2485;
+    for (const p of profileSamples) {
+      if (p.elevationM < minElevationM) minElevationM = p.elevationM;
+      if (p.elevationM > maxElevationM) maxElevationM = p.elevationM;
+    }
     const targetElevationM =
       nodes.length > 0 ? nodes[nodes.length - 1].elevationM : -2485;
 
@@ -823,9 +842,10 @@ export class EVARoutePlannerController {
 
   public static getEnvironmentSnapshot(
     scenario: ConditionScenario,
-    tick: number
+    tick: number,
+    realWeather?: RealWeather | null
   ): MarsTelemetrySnapshot {
-    return getTelemetrySnapshot(scenario, tick);
+    return getTelemetrySnapshot(scenario, tick, realWeather);
   }
 
   public static getPlannerModes(): { id: PlannerMode; label: string }[] {
