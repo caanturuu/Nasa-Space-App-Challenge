@@ -76,6 +76,8 @@ export class JezeroTerrainGrid {
   readonly hazardPenalty: Float64Array;
   readonly hazardTypes: string[];
   readonly scienceBonus: Float64Array;
+  /** Where `elevationM` came from — flipped to NASA_TREK_DEM by applyRasterDem(). */
+  demSource: "SIMULATED" | "NASA_TREK_DEM" = "SIMULATED";
 
   constructor() {
     const { dxM, dyM } = gridCellMeters(this.bounds, this.rows, this.cols);
@@ -107,6 +109,8 @@ export class JezeroTerrainGrid {
   }
 
   private buildDem(): Float64Array {
+    // Fallback only. Real MOLA elevations are applied by applyRasterDem() once
+    // /api/terrain/jezero responds; this keeps the grid usable before that.
     const elev = new Float64Array(this.rows * this.cols);
     const lonSpan = this.bounds.lonMax - this.bounds.lonMin;
     const latSpan = this.bounds.latMax - this.bounds.latMin;
@@ -139,6 +143,23 @@ export class JezeroTerrainGrid {
       }
     }
     return elev;
+  }
+
+  /**
+   * Replaces the modelled elevations with a real NASA Trek MOLA raster and
+   * recomputes slope from it. Returns false if the raster shape does not match.
+   */
+  applyRasterDem(elevationM: ArrayLike<number>): boolean {
+    if (elevationM.length !== this.rows * this.cols) return false;
+    for (let k = 0; k < elevationM.length; k++) {
+      this.elevationM[k] = elevationM[k];
+    }
+    const slope = this.computeSlopeDeg();
+    for (let k = 0; k < slope.length; k++) {
+      this.slopeDeg[k] = slope[k];
+    }
+    this.demSource = "NASA_TREK_DEM";
+    return true;
   }
 
   private computeSlopeDeg(): Float64Array {
@@ -323,6 +344,33 @@ export function getTerrainGrid(): JezeroTerrainGrid {
     cachedGrid = new JezeroTerrainGrid();
   }
   return cachedGrid;
+}
+
+let demRefresh: Promise<boolean> | null = null;
+
+/**
+ * Fetches the real NASA Trek MOLA raster and applies it to the cached grid.
+ * Safe to call repeatedly — the request is de-duplicated and the route caches.
+ */
+export function refreshTerrainGrid(): Promise<boolean> {
+  if (typeof window === "undefined") return Promise.resolve(false);
+  if (demRefresh) return demRefresh;
+
+  demRefresh = (async () => {
+    try {
+      const res = await fetch("/api/terrain/jezero");
+      if (!res.ok) return false;
+      const payload = (await res.json()) as { elevationM?: number[] };
+      if (!Array.isArray(payload.elevationM)) return false;
+      return getTerrainGrid().applyRasterDem(payload.elevationM);
+    } catch {
+      return false;
+    } finally {
+      demRefresh = null;
+    }
+  })();
+
+  return demRefresh;
 }
 
 export interface ProfileSamplePoint {

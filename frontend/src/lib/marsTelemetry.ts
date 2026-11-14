@@ -1,6 +1,23 @@
 export type ConditionScenario = "nominal" | "dust_storm" | "solar_particle_event";
 export type EvaStatus = "GO" | "CAUTION" | "ABORT";
 
+/**
+ * Real measurements from NASA's REMS archive (MSL / Gale Crater).
+ * Winds, dust opacity and radiation are not published there, so they are
+ * absent on purpose — the caller must model them and label them simulated.
+ */
+export interface RealWeather {
+  sol: number;
+  minTempC: number;
+  maxTempC: number;
+  pressurePa: number;
+  solarLongitudeDeg: number;
+  earthDate: string;
+  season: string;
+  source: "NASA_REMS";
+  fetchedAt: string;
+}
+
 export interface MarsTelemetrySnapshot {
   sol: number;
   localMarsTime: string;
@@ -19,7 +36,7 @@ export interface MarsTelemetrySnapshot {
   advisory: string;
 }
 
-export function getTelemetrySnapshot(
+function getSimulatedSnapshot(
   scenario: ConditionScenario,
   tick = 0
 ): MarsTelemetrySnapshot {
@@ -84,6 +101,29 @@ export function getTelemetrySnapshot(
     orbiterRelay: "MRO + Mars Odyssey (Link Strong, 11.4m OWLT)",
     advisory:
       "Nominal Jezero Sol conditions (MEDA baseline). Clear orbiter relay; all Delta and Séítah perimeter corridors open.",
+  };
+}
+
+/**
+ * Overlays real REMS measurements onto the modelled snapshot.
+ * Only temperature, pressure and sol are replaced — everything else stays
+ * modelled and must be labelled as such by the caller.
+ */
+export function getTelemetrySnapshot(
+  scenario: ConditionScenario,
+  tick = 0,
+  real?: RealWeather | null
+): MarsTelemetrySnapshot {
+  const base = getSimulatedSnapshot(scenario, tick);
+  if (!real) return base;
+
+  const meanTempC = (real.minTempC + real.maxTempC) / 2;
+  return {
+    ...base,
+    sol: real.sol,
+    temperatureC: Number(meanTempC.toFixed(1)),
+    pressurePa: Number(real.pressurePa.toFixed(1)),
+    location: `Jezero Crater (18.44°N, 77.45°E) · REMS sol ${real.sol} @ Gale`,
   };
 }
 

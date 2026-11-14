@@ -13,6 +13,8 @@ export interface MarsLayerConfig {
   defaultVisible: boolean;
   crs: string;
   tileUrlTemplate?: string;
+  /** Real upstream tile URL; the proxy at /api/tiles/... fetches this. */
+  upstreamTileUrl?: string;
   description: string;
 }
 
@@ -84,7 +86,8 @@ export const NASA_LAYERS: MarsLayerConfig[] = [
     defaultOpacity: 1.0,
     defaultVisible: false,
     crs: "EPSG:104905",
-    tileUrlTemplate:
+    tileUrlTemplate: "/api/tiles/mola_clrshade/{z}/{y}/{x}",
+    upstreamTileUrl:
       "https://trek.nasa.gov/tiles/Mars/EQ/Mars_MGS_MOLA_ClrShade_merge_global_463m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
     description: "Global Martian elevation shaded relief (~463 m/px) for macro basin orientation.",
   },
@@ -100,7 +103,8 @@ export const NASA_LAYERS: MarsLayerConfig[] = [
     defaultOpacity: 1.0,
     defaultVisible: true,
     crs: "EPSG:104905",
-    tileUrlTemplate:
+    tileUrlTemplate: "/api/tiles/viking_mdim21/{z}/{y}/{x}",
+    upstreamTileUrl:
       "https://trek.nasa.gov/tiles/Mars/EQ/Mars_Viking_MDIM21_ClrMosaic_global_232m/1.0.0/default/default028mm/{z}/{y}/{x}.jpg",
     description: "Natural-color global Mars mosaic (~232 m/px) for rusty terrain realism.",
   },
@@ -116,8 +120,8 @@ export const NASA_LAYERS: MarsLayerConfig[] = [
     defaultOpacity: 1.0,
     defaultVisible: false,
     crs: "EPSG:104905",
-    tileUrlTemplate:
-      "https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}",
+    tileUrlTemplate: "/api/tiles/ctx_global_5m/{z}/{y}/{x}",
+    upstreamTileUrl: "https://astro.arcgis.com/arcgis/rest/services/OnMars/CTX/MapServer/tile/{z}/{y}/{x}",
     description: "High-resolution (~5 m/px) satellite imagery showing crater rims and delta fans.",
   },
   {
@@ -132,7 +136,8 @@ export const NASA_LAYERS: MarsLayerConfig[] = [
     defaultOpacity: 1.0,
     defaultVisible: false,
     crs: "EPSG:104905",
-    tileUrlTemplate:
+    tileUrlTemplate: "/api/tiles/jezero_trek_ctx_6m/{z}/{y}/{x}",
+    upstreamTileUrl:
       "https://trek.nasa.gov/tiles/Mars/EQ/JEZ_ctx_B_soc_008_orthoMosaic_6m_Eqc_latTs0_lon0/1.0.0/default/default028mm/{z}/{y}/{x}.png",
     description: "Official NASA Space Apps reference layer: Controlled CTX 6m orthomosaic over Jezero Crater landing area.",
   },

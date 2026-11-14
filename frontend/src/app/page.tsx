@@ -8,8 +8,9 @@ import {
   ScienceTargetFeature,
 } from "@/lib/marsData";
 import { PlannerMode } from "@/lib/marsRouting";
-import { ConditionScenario } from "@/lib/marsTelemetry";
-import { loadGlobalMolaData } from "@/lib/marsTerrain";
+import { ConditionScenario, RealWeather } from "@/lib/marsTelemetry";
+import { loadGlobalMolaData, refreshTerrainGrid } from "@/lib/marsTerrain";
+import { fetchHorizonsSunAngles, SunAnglePoint } from "@/lib/marsSunAngle";
 import {
   BasemapId,
   BasemapRegistry,
@@ -64,16 +65,39 @@ export default function MarsWorkbenchPage() {
   // 4. Live MEDA Telemetry & Contingency Scenario
   const [scenario, setScenario] = useState<ConditionScenario>("nominal");
   const [tick, setTick] = useState<number>(0);
+  const [realWeather, setRealWeather] = useState<RealWeather | null>(null);
+  const [realSunSamples, setRealSunSamples] = useState<SunAnglePoint[] | null>(null);
+  const [demIsReal, setDemIsReal] = useState<boolean>(false);
 
   useEffect(() => {
     loadGlobalMolaData();
+
+    // Real NASA data, fetched once — not on the 3 s UI tick.
+    refreshTerrainGrid().then(setDemIsReal);
+    fetchHorizonsSunAngles(18.4446, 77.4509).then(setRealSunSamples);
+
     const id = window.setInterval(() => setTick((t) => t + 1), 3000);
     return () => window.clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/conditions/live?scenario=${scenario}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((payload: { realWeather?: RealWeather | null } | null) => {
+        if (!cancelled) setRealWeather(payload?.realWeather ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setRealWeather(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scenario]);
+
   const telemetry = useMemo(
-    () => EVARoutePlannerController.getEnvironmentSnapshot(scenario, tick),
-    [scenario, tick]
+    () => EVARoutePlannerController.getEnvironmentSnapshot(scenario, tick, realWeather),
+    [scenario, tick, realWeather]
   );
 
   // 5. Real Geographic Waypoints (Start -> Second -> ... -> End)
@@ -123,7 +147,10 @@ export default function MarsWorkbenchPage() {
       maxSlopeLimit,
       true
     );
-  }, [isEmergency, waypoints, routingMode, maxSlopeLimit]);
+    // demIsReal is a cache-bust signal: re-run A* once the real MOLA raster
+    // replaces the modelled grid. It is intentionally not read in the body.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEmergency, waypoints, routingMode, maxSlopeLimit, demIsReal]);
 
   // Pre-compute preset summaries for Overview cards so every card shows real terrain math
   const presetModels = useMemo(() => {
@@ -138,7 +165,10 @@ export default function MarsWorkbenchPage() {
       const o2 = life.evaluate(model, false);
       return { preset, model, o2 };
     });
-  }, []);
+    // Same cache-bust signal as computedRoute: preset cards must also pick up
+    // the real MOLA raster once it lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demIsReal]);
 
   // 7. Real OOP Suit O2 Fuel Gauge Calculation
   const lifeSupport = useMemo(() => {
@@ -152,9 +182,10 @@ export default function MarsWorkbenchPage() {
       computedRoute.nodes[Math.floor(computedRoute.nodes.length / 2)];
     return new SolarEphemerisModel(
       mid?.lat ?? 18.4446,
-      mid?.lon ?? 77.4509
+      mid?.lon ?? 77.4509,
+      realSunSamples
     );
-  }, [computedRoute.nodes]);
+  }, [computedRoute.nodes, realSunSamples]);
 
   const sunSamples = useMemo(() => solarModel.getSamples(), [solarModel]);
   const currentSun = useMemo(() => solarModel.getCurrentAtLmst(), [solarModel]);
@@ -452,6 +483,37 @@ export default function MarsWorkbenchPage() {
         <div className="flex-1 h-full flex items-center justify-end">
           <div
             style={{ borderColor: themeTokens.borderColor }}
+            className="h-[34px] px-3 border-l flex flex-col justify-center"
+            title="Asal data: hijau = terukur (NASA/JPL), abu = model"
+          >
+            <span
+              style={{ color: themeTokens.textMuted }}
+              className="font-mono text-[8.5px] uppercase tracking-wider leading-none"
+            >
+              SUMBER
+            </span>
+            <span className="flex items-center gap-1 mt-1">
+              {[
+                { label: "DEM", real: demIsReal },
+                { label: "CUACA", real: realWeather !== null },
+                { label: "MATAHARI", real: realSunSamples !== null },
+              ].map((b) => (
+                <span
+                  key={b.label}
+                  className="font-mono text-[8.5px] font-bold px-1 py-[1px] rounded-[2px] border"
+                  style={{
+                    color: b.real ? "#34D399" : themeTokens.textMuted,
+                    borderColor: b.real ? "#34D399" : themeTokens.borderColor,
+                  }}
+                >
+                  {b.label} {b.real ? "ASLI" : "SIM"}
+                </span>
+              ))}
+            </span>
+          </div>
+
+          <div
+            style={{ borderColor: themeTokens.borderColor }}
             className="h-[34px] px-4 border-l flex flex-col justify-center"
           >
             <span
@@ -695,7 +757,7 @@ export default function MarsWorkbenchPage() {
                 style={{ color: themeTokens.textSecondary }}
                 className="font-mono text-[10px] font-bold uppercase tracking-wider"
               >
-                SUIT O2 RESERVE (LIFE SUPPORT)
+                OKSIGEN
               </span>
               <span className="font-mono text-[13px] font-bold text-[#38BDF8]">
                 {lifeSupport.headerReserveText}

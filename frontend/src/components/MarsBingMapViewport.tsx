@@ -102,8 +102,8 @@ export function MarsBingMapViewport({
     inJezeroDem: true,
     lon: 77.4509,
     lat: 18.4446,
-    elevationM: -2568,
-    slopeDeg: 4.2,
+    elevationM: null,
+    slopeDeg: null,
     hazardType: null,
   });
 
@@ -134,6 +134,7 @@ export function MarsBingMapViewport({
     });
 
     const terrainGrid = getTerrainGrid();
+    setCursorSample(terrainGrid.samplePoint(77.4509, 18.4446));
     const layerInstances: Record<string, BaseLayer> = {};
     const orderedLayers: BaseLayer[] = [];
 
@@ -712,7 +713,7 @@ export function MarsBingMapViewport({
           {cursorSample.lon.toFixed(4)} E &nbsp;
           {cursorSample.elevationM !== null
             ? `${Math.round(cursorSample.elevationM)} m`
-            : "-2568 m"}
+            : "— m"}
         </span>
       </div>
     </div>

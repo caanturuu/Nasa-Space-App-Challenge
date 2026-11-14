@@ -13,6 +13,8 @@ export interface SunAnglePoint {
 export function computeMarsSunAngles(latDeg: number, lonDeg: number): SunAnglePoint[] {
   const points: SunAnglePoint[] = [];
 
+  // Fallback geometry only. Real az/el comes from /api/sun-angle (JPL Horizons)
+  // via applyHorizonsSamples(); this keeps the chart populated before it lands.
   // Mars Obliquity (Axial Tilt) ~ 25.19°
   // For current Jezero season (Ls ~ 120° Northern Summer), solar declination delta ~ +22°
   const declinationRad = (22.0 * Math.PI) / 180;
@@ -56,4 +58,23 @@ export function computeMarsSunAngles(latDeg: number, lonDeg: number): SunAnglePo
   }
 
   return points;
+}
+
+/**
+ * Fetches real Sun az/el for the site from JPL Horizons.
+ * Returns null on any failure so callers keep the local fallback curve.
+ */
+export async function fetchHorizonsSunAngles(
+  latDeg: number,
+  lonDeg: number
+): Promise<SunAnglePoint[] | null> {
+  if (typeof window === "undefined") return null;
+  try {
+    const res = await fetch(`/api/sun-angle?lon=${lonDeg}&lat=${latDeg}`);
+    if (!res.ok) return null;
+    const payload = (await res.json()) as { points?: SunAnglePoint[] };
+    return Array.isArray(payload.points) && payload.points.length >= 2 ? payload.points : null;
+  } catch {
+    return null;
+  }
 }
