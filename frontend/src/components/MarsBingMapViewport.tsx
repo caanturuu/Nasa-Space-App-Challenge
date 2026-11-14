@@ -15,11 +15,9 @@ import ImageStatic from "ol/source/ImageStatic";
 import VectorSource from "ol/source/Vector";
 import Projection from "ol/proj/Projection";
 import TileGrid from "ol/tilegrid/TileGrid";
-import ScaleLine from "ol/control/ScaleLine";
 import { defaults as defaultControls } from "ol/control/defaults";
-import { Circle as CircleStyle, Fill, Icon, Stroke, Style, Text } from "ol/style";
+import { Circle as CircleStyle, Fill, Stroke, Style, Text } from "ol/style";
 import BaseLayer from "ol/layer/Base";
-import Draw from "ol/interaction/Draw";
 
 import {
   JEZERO_BOUNDS,
@@ -34,115 +32,96 @@ import {
   NASA_LAYERS,
   ScienceTargetFeature,
 } from "@/lib/marsData";
-import { EvaRouteResult } from "@/lib/marsRouting";
 import { MarsTelemetrySnapshot } from "@/lib/marsTelemetry";
-import { TerrainSample, getTerrainGrid, DrawnProfileResult, computeLineElevationProfile } from "@/lib/marsTerrain";
-import { LayerState } from "./MarsFloatingRightControls";
-import { MapPickMode } from "./MarsFloatingLeftCard";
+import { TerrainSample, getTerrainGrid } from "@/lib/marsTerrain";
+import {
+  RouteSegment,
+  ThemeTokens,
+  WaypointNode,
+  WorkbenchTabId,
+} from "@/oop/MarsWorkbenchOOP";
 
-const GMAPS_BLUE_PIN_SVG =
-  "data:image/svg+xml;utf8," +
-  encodeURIComponent(
-    `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="28" viewBox="0 0 24 28">
-      <filter id="p-sh" x="-20%" y="-20%" width="140%" height="140%">
-        <feDropShadow dx="0" dy="1" stdDeviation="0.8" flood-color="#000000" flood-opacity="0.38"/>
-      </filter>
-      <!-- Symmetrical white teardrop pin pointing straight down -->
-      <path d="M12 2C7.03 2 3 6.03 3 11c0 6.6 8.1 14.5 8.5 14.9.3.3.7.3 1 0 .4-.4 8.5-8.3 8.5-14.9 0-4.97-4.03-9-9-9z" fill="#ffffff" filter="url(#p-sh)"/>
-      <!-- Blue Circle inside -->
-      <circle cx="12" cy="11" r="6.8" fill="#0284c7"/>
-      <!-- White Dot in Center -->
-      <circle cx="12" cy="11" r="2.5" fill="#ffffff"/>
-    </svg>`
-  );
+const VIEW_RESOLUTIONS = Array.from(
+  { length: 17 },
+  (_, z) => 0.703125 / Math.pow(2, z)
+);
 
-const VIEW_RESOLUTIONS = Array.from({ length: 17 }, (_, z) => 0.703125 / Math.pow(2, z));
+export interface LayerState {
+  visible: boolean;
+  opacity: number;
+}
 
 interface MarsBingMapViewportProps {
   layerStates: Record<string, LayerState>;
   selectedPlace: ScienceTargetFeature;
-  route: EvaRouteResult | null;
-  showRoute: boolean;
-  startCoord: [number, number];
-  endCoord: [number, number];
-  pickMode: MapPickMode;
-  onMapPickCoord: (coord: [number, number]) => void;
+  waypointNodes: WaypointNode[];
+  routeSegments: RouteSegment[];
+  isMarkingMode: boolean;
+  nextWaypointPrompt: string;
+  onMapClickCoordinate: (coord: [number, number]) => void;
   onSelectPlace: (place: ScienceTargetFeature) => void;
   telemetry: MarsTelemetrySnapshot;
   cameraRequest: { preset: CameraPreset; seq: number } | null;
   zoomSignal: { delta: number; seq: number } | null;
   hoverProfileCoord: [number, number] | null;
-  showProbeHud: boolean;
-  mapDimension?: "2D" | "3D";
-  isDrawingLine?: boolean;
-  onLiveDrawLine?: (result: DrawnProfileResult) => void;
-  onFinishDrawLine?: (result: DrawnProfileResult) => void;
-  drawnRouteCoords?: [number, number][] | null;
+  themeTokens: ThemeTokens;
+  activeTab: WorkbenchTabId;
+  bottomProfilerOpen: boolean;
 }
 
 export function MarsBingMapViewport({
   layerStates,
   selectedPlace,
-  route,
-  showRoute,
-  startCoord,
-  endCoord,
-  pickMode,
-  onMapPickCoord,
+  waypointNodes,
+  routeSegments,
+  isMarkingMode,
+  nextWaypointPrompt,
+  onMapClickCoordinate,
   onSelectPlace,
   telemetry,
   cameraRequest,
   zoomSignal,
   hoverProfileCoord,
-  showProbeHud,
-  mapDimension = "2D",
-  isDrawingLine = false,
-  onLiveDrawLine,
-  onFinishDrawLine,
-  drawnRouteCoords,
+  themeTokens,
+  activeTab,
+  bottomProfilerOpen,
 }: MarsBingMapViewportProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
   const layersMapRef = useRef<Record<string, BaseLayer>>({});
   const routeSourceRef = useRef<VectorSource | null>(null);
-  const drawnSourceRef = useRef<VectorSource | null>(null);
-  const drawInteractionRef = useRef<Draw | null>(null);
-  const onLiveDrawRef = useRef(onLiveDrawLine);
-  const onFinishDrawRef = useRef(onFinishDrawLine);
   const safeRangeSourceRef = useRef<VectorSource | null>(null);
   const activePinSourceRef = useRef<VectorSource | null>(null);
   const hoverSourceRef = useRef<VectorSource | null>(null);
 
-  const pickModeRef = useRef<MapPickMode>(pickMode);
-  const onMapPickRef = useRef(onMapPickCoord);
+  const isMarkingRef = useRef<boolean>(isMarkingMode);
+  const onMapClickRef = useRef(onMapClickCoordinate);
   const onSelectPlaceRef = useRef(onSelectPlace);
 
-  const [cursorSample, setCursorSample] = useState<TerrainSample | null>({
+  const [cursorSample, setCursorSample] = useState<TerrainSample>({
     inJezeroDem: true,
     lon: 77.4509,
     lat: 18.4446,
-    elevationM: -2570,
-    slopeDeg: 1.2,
+    elevationM: -2568,
+    slopeDeg: 4.2,
     hazardType: null,
   });
 
-  const [mapScale, setMapScale] = useState<{ widthPx: number; text: string }>({
-    widthPx: 90,
-    text: "50 km",
-  });
+  const [mapScaleText, setMapScaleText] = useState<string>("500 m");
 
   useEffect(() => {
-    pickModeRef.current = pickMode;
-  }, [pickMode]);
+    isMarkingRef.current = isMarkingMode;
+  }, [isMarkingMode]);
 
   useEffect(() => {
-    onMapPickRef.current = onMapPickCoord;
-  }, [onMapPickCoord]);
+    onMapClickRef.current = onMapClickCoordinate;
+  }, [onMapClickCoordinate]);
 
   useEffect(() => {
     onSelectPlaceRef.current = onSelectPlace;
   }, [onSelectPlace]);
 
+  // Initialize Real OpenLayers Mars Map (IAU_2015:49900 + NASA Trek WMTS + Interactive Pan/Zoom/Click)
   useEffect(() => {
     if (!containerRef.current) return;
 
@@ -193,8 +172,6 @@ export function MarsBingMapViewport({
               const maxY = Math.pow(2, z);
               if (x < 0 || x >= maxX || y < 0 || y >= maxY) return undefined;
 
-              // Fallback for USGS ArcGIS server bug where zoom 1 eastern hemisphere (x >= 2) returns 500 error:
-              // Use zoom 2 corresponding quarter tile so eastern Mars never displays black holes
               if (cfg.id === "ctx_global_5m" && z === 1 && x >= 2) {
                 const z2 = 2;
                 const x2 = x * 2;
@@ -235,6 +212,7 @@ export function MarsBingMapViewport({
       }
     }
 
+    // 1. SOLID Hazard Polygons (with ! SEITAH DUST TRAP badge matching UI1.figcraft)
     const hazardFeatures = JEZERO_HAZARDS.features.map(
       (feat) =>
         new Feature({
@@ -244,46 +222,46 @@ export function MarsBingMapViewport({
     );
     const hazardLayer = new VectorLayer({
       visible: layerStates.hazard_zones?.visible ?? true,
-      opacity: layerStates.hazard_zones?.opacity ?? 0.8,
+      opacity: layerStates.hazard_zones?.opacity ?? 0.9,
       source: new VectorSource({ features: hazardFeatures }),
       style: (feature) => {
         const props = feature.get("hazardProps");
-        const isCritical = props?.severity === "critical";
+        const isDustTrap = props?.id === "haz-seitah-sand";
         return new Style({
           stroke: new Stroke({
-            color: isCritical ? "rgba(244, 63, 94, 0.85)" : "rgba(249, 115, 22, 0.85)",
-            width: 1.6,
-            lineDash: [5, 4],
+            color: "rgba(239, 68, 68, 0.8)",
+            width: 1.8, // 100% SOLID (no lineDash)
           }),
           fill: new Fill({
-            color: isCritical ? "rgba(244, 63, 94, 0.12)" : "rgba(249, 115, 22, 0.12)",
+            color: "rgba(239, 68, 68, 0.16)",
           }),
+          text: isDustTrap
+            ? new Text({
+                text: "! SEITAH DUST TRAP",
+                font: "700 10px Consolas, monospace",
+                fill: new Fill({ color: "#FCA5A5" }),
+                backgroundFill: new Fill({ color: "#1E0E10" }),
+                backgroundStroke: new Stroke({ color: "#EF4444", width: 1 }),
+                padding: [4, 7, 4, 7],
+              })
+            : undefined,
         });
       },
     });
     layerInstances.hazard_zones = hazardLayer;
     orderedLayers.push(hazardLayer);
 
+    // 2. SOLID 5.5 km EVA SAFE RADIUS Circle
     const safeRangeSource = new VectorSource();
     safeRangeSourceRef.current = safeRangeSource;
     orderedLayers.push(new VectorLayer({ source: safeRangeSource }));
 
+    // 3. SOLID Multi-Point Route Segments & Numbered Waypoints (1 -> 2 -> 3 -> 4)
     const routeSource = new VectorSource();
     routeSourceRef.current = routeSource;
     orderedLayers.push(new VectorLayer({ source: routeSource }));
 
-    const drawnSource = new VectorSource();
-    drawnSourceRef.current = drawnSource;
-    const drawnLayer = new VectorLayer({
-      source: drawnSource,
-      style: [
-        new Style({ stroke: new Stroke({ color: "rgba(2, 132, 199, 0.4)", width: 8 }) }),
-        new Style({ stroke: new Stroke({ color: "#38bdf8", width: 3.5, lineDash: [8, 6] }) }),
-      ],
-    });
-    orderedLayers.push(drawnLayer);
-
-    // Bing-Maps-style place labels across Jezero & Global Mars
+    // 4. Rectangular Pill POI Pins (matching UI1.figcraft styling)
     const placeFeatures = ALL_MARS_PLACES.map(
       (feat) =>
         new Feature({
@@ -298,38 +276,71 @@ export function MarsBingMapViewport({
       style: (feature, resolution) => {
         const pf = feature.get("placeFeature") as ScienceTargetFeature;
         const isJezero = pf.properties.inJezeroGrid;
-        // Hide dense Jezero POIs when zoomed all the way out to global view
         if (isJezero && resolution > 0.04 && pf.properties.id !== "hab-octavia") {
           return undefined;
         }
-        return new Style({
-          image: new Icon({
-            src: GMAPS_BLUE_PIN_SVG,
-            anchor: [0.5, 0.95],
-            scale: 0.95,
+
+        const isHab = pf.properties.id === "hab-octavia";
+        const isDelta = pf.properties.id === "delta-front-hawksbill";
+        const isBelva = pf.properties.id === "belva-rim";
+
+        const dotColor = isHab
+          ? "#22C55E"
+          : isDelta
+            ? "#38BDF8"
+            : isBelva
+              ? "#E86A33"
+              : "#94A3B8";
+        const borderColor = isHab
+          ? "#22C55E"
+          : isDelta
+            ? "#38BDF8"
+            : "#334155";
+        const textColor = isHab
+          ? "#F8FAFC"
+          : isDelta
+            ? "#E0F2FE"
+            : "#E2E8F0";
+
+        const labelText = isDelta
+          ? "Hawksbill Delta · 96"
+          : isHab
+            ? "Octavia Hab Base"
+            : pf.properties.name;
+
+        return [
+          new Style({
+            image: new CircleStyle({
+              radius: 5,
+              fill: new Fill({ color: dotColor }),
+              stroke: new Stroke({ color: "#090B0F", width: 2 }),
+            }),
           }),
-          text: new Text({
-            text: pf.properties.name,
-            textAlign: "right",
-            textBaseline: "middle",
-            offsetX: -16,
-            offsetY: -15,
-            font: isJezero
-              ? "700 12px 'Helvetica Neue', Helvetica, Arial, sans-serif"
-              : "700 13px 'Helvetica Neue', Helvetica, Arial, sans-serif",
-            fill: new Fill({ color: "#ffffff" }),
-            stroke: new Stroke({ color: "#000000", width: 3.5 }),
+          new Style({
+            text: new Text({
+              text: labelText,
+              textAlign: "left",
+              textBaseline: "middle",
+              offsetX: 11,
+              font: "700 11px Bahnschrift, 'Helvetica Neue', sans-serif",
+              fill: new Fill({ color: textColor }),
+              backgroundFill: new Fill({ color: "#0E1117" }),
+              backgroundStroke: new Stroke({ color: borderColor, width: 1 }),
+              padding: [4, 7, 4, 7],
+            }),
           }),
-        });
+        ];
       },
     });
     layerInstances.science_targets = placesLayer;
     orderedLayers.push(placesLayer);
 
+    // 5. Active Highlighted POI Halo
     const activePinSource = new VectorSource();
     activePinSourceRef.current = activePinSource;
     orderedLayers.push(new VectorLayer({ source: activePinSource }));
 
+    // 6. Elevation Profile Hover Pin
     const hoverSource = new VectorSource();
     hoverSourceRef.current = hoverSource;
     orderedLayers.push(
@@ -338,8 +349,8 @@ export function MarsBingMapViewport({
         style: new Style({
           image: new CircleStyle({
             radius: 6,
-            fill: new Fill({ color: "#38bdf8" }),
-            stroke: new Stroke({ color: "#0f172a", width: 2 }),
+            fill: new Fill({ color: "#38BDF8" }),
+            stroke: new Stroke({ color: "#090B0F", width: 2.5 }),
           }),
         }),
       })
@@ -350,17 +361,15 @@ export function MarsBingMapViewport({
     const map = new Map({
       target: containerRef.current,
       layers: orderedLayers,
-      controls: defaultControls({ attribution: false, zoom: false, rotate: false }).extend([
-        new ScaleLine({
-          units: "metric",
-          bar: false,
-          minWidth: 80,
-        }),
-      ]),
+      controls: defaultControls({
+        attribution: false,
+        zoom: false,
+        rotate: false,
+      }),
       view: new View({
         projection: marsProjection,
-        center: [0, 0],
-        zoom: 2.2,
+        center: [77.425, 18.45],
+        zoom: 12.2,
         resolutions: VIEW_RESOLUTIONS,
         constrainResolution: false,
         extent: [-180, -90, 180, 90],
@@ -368,59 +377,66 @@ export function MarsBingMapViewport({
     });
 
     map.on("pointermove", (evt) => {
-      if (evt.dragging) return;
+      if (evt.dragging || !evt.coordinate) return;
       const [lon, lat] = evt.coordinate as [number, number];
+      if (!Number.isFinite(lon) || !Number.isFinite(lat)) return;
       setCursorSample(terrainGrid.samplePoint(lon, lat));
     });
 
     map.on("singleclick", (evt) => {
-      if (pickModeRef.current !== "inspect") {
+      // In waypoint marking mode, clicking anywhere places the next waypoint (Start -> 2nd -> End)
+      if (isMarkingRef.current) {
         const [lon, lat] = evt.coordinate as [number, number];
-        onMapPickRef.current([Number(lon.toFixed(5)), Number(lat.toFixed(5))]);
+        onMapClickRef.current([Number(lon.toFixed(5)), Number(lat.toFixed(5))]);
         return;
       }
 
+      // Otherwise check if a POI marker was clicked first; if not, still allow clicking in Route tab
+      let clickedPlace: ScienceTargetFeature | null = null;
       map.forEachFeatureAtPixel(
         evt.pixel,
         (feature) => {
-          const pf = feature.get("placeFeature") as ScienceTargetFeature | undefined;
+          const pf = feature.get("placeFeature") as
+            | ScienceTargetFeature
+            | undefined;
           if (pf) {
-            onSelectPlaceRef.current(pf);
+            clickedPlace = pf;
             return true;
           }
           return false;
         },
         { hitTolerance: 10 }
       );
+
+      if (clickedPlace) {
+        onSelectPlaceRef.current(clickedPlace);
+        return;
+      }
+
+      const [lon, lat] = evt.coordinate as [number, number];
+      onMapClickRef.current([Number(lon.toFixed(5)), Number(lat.toFixed(5))]);
     });
 
     const updateScaleBar = () => {
       const view = map.getView();
       const res = view.getResolution();
       if (!res) return;
-      const center = view.getCenter() || [0, 0];
+      const center = view.getCenter() || [77.425, 18.45];
       const lat = center[1];
       const latRad = (lat * Math.PI) / 180;
       const metersPerDegree = MARS_METERS_PER_DEGREE * Math.cos(latRad);
       const metersPerPixel = res * metersPerDegree;
+      const totalMeters = 72 * metersPerPixel;
 
-      // Fixed 140px bar: compute the exact ground distance represented by 140px
-      const totalMeters = 140 * metersPerPixel;
-
-      let text = "";
+      let text = "500 m";
       if (totalMeters >= 100_000) {
         text = `${Math.round(totalMeters / 1000)} km`;
-      } else if (totalMeters >= 10_000) {
-        text = `${(totalMeters / 1000).toFixed(1)} km`;
       } else if (totalMeters >= 1000) {
-        text = `${(totalMeters / 1000).toFixed(2)} km`;
-      } else if (totalMeters >= 10) {
-        text = `${Math.round(totalMeters)} m`;
+        text = `${(totalMeters / 1000).toFixed(1)} km`;
       } else {
-        text = `${totalMeters.toFixed(1)} m`;
+        text = `${Math.max(10, Math.round(totalMeters / 10) * 10)} m`;
       }
-
-      setMapScale({ widthPx: 140, text });
+      setMapScaleText(text);
     };
 
     map.on("postrender", updateScaleBar);
@@ -435,6 +451,15 @@ export function MarsBingMapViewport({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Trigger OpenLayers resize when bottom profiler opens/closes
+  useEffect(() => {
+    const id = window.setTimeout(() => {
+      mapRef.current?.updateSize();
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [bottomProfilerOpen, telemetry.evaStatus]);
+
+  // Sync Basemap Layers (MOLA / MRO CTX 6m / Viking)
   useEffect(() => {
     for (const [id, st] of Object.entries(layerStates)) {
       const layer = layersMapRef.current[id];
@@ -445,221 +470,174 @@ export function MarsBingMapViewport({
     }
   }, [layerStates]);
 
-  // Active Bing-Maps-style Red Pin
+  // Highlight Selected Place
   useEffect(() => {
     const src = activePinSourceRef.current;
     if (!src) return;
     src.clear();
-
-    const pin = new Feature({ geometry: new Point(selectedPlace.geometry.coordinates) });
-    pin.setStyle(
+    const halo = new Feature({
+      geometry: new Point(selectedPlace.geometry.coordinates),
+    });
+    halo.setStyle(
       new Style({
-        image: new Icon({
-          src: GMAPS_BLUE_PIN_SVG,
-          anchor: [0.5, 0.95],
-          scale: 1.25,
-        }),
-        text: new Text({
-          text: `${selectedPlace.properties.name}\n${selectedPlace.properties.region ?? "Mars"}`,
-          textAlign: "right",
-          textBaseline: "middle",
-          offsetX: -18,
-          offsetY: -20,
-          font: "700 13px 'Helvetica Neue', Helvetica, Arial, sans-serif",
-          fill: new Fill({ color: "#ffffff" }),
-          stroke: new Stroke({ color: "#000000", width: 4 }),
+        image: new CircleStyle({
+          radius: 10,
+          fill: new Fill({ color: "rgba(56, 189, 248, 0.18)" }),
+          stroke: new Stroke({ color: "#38BDF8", width: 2 }),
         }),
       })
     );
-    src.addFeature(pin);
+    src.addFeature(halo);
   }, [selectedPlace]);
 
-  // Route polyline (visible when Directions mode/route active)
+  // Render SOLID Multi-Point Route Segments + Numbered Circular Waypoint Badges (1, 2, 3...)
   useEffect(() => {
     const src = routeSourceRef.current;
     if (!src) return;
     src.clear();
-    if (!showRoute || !route) return;
 
-    const directFeature = new Feature({
-      geometry: new LineString(route.directCoordinates),
-    });
-    directFeature.setStyle(
-      new Style({
-        stroke: new Stroke({
-          color: "rgba(244, 63, 94, 0.55)",
-          width: 2,
-          lineDash: [5, 5],
+    // 1. Dark casing + slope-colored SOLID segments
+    for (const seg of routeSegments) {
+      if (seg.coordinates.length >= 2) {
+        const casing = new Feature({
+          geometry: new LineString(seg.coordinates),
+        });
+        casing.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: "#090B0F",
+              width: 8,
+              lineCap: "round",
+              lineJoin: "round",
+            }),
+          })
+        );
+        src.addFeature(casing);
+      }
+
+      for (const sub of seg.subLegs) {
+        const subFeature = new Feature({
+          geometry: new LineString(sub.coords),
+        });
+        subFeature.setStyle(
+          new Style({
+            stroke: new Stroke({
+              color: sub.color,
+              width: 4,
+              lineCap: "round",
+              lineJoin: "round",
+            }),
+          })
+        );
+        src.addFeature(subFeature);
+      }
+    }
+
+    // 2. Filled Circular Waypoint Badges (1 -> 2 -> 3 -> End)
+    for (const wp of waypointNodes) {
+      const nodeFeature = new Feature({
+        geometry: new Point(wp.coordinates),
+      });
+      nodeFeature.setStyle([
+        new Style({
+          image: new CircleStyle({
+            radius: 11.5,
+            fill: new Fill({ color: wp.badgeColor }),
+            stroke: new Stroke({ color: "#090B0F", width: 2 }),
+          }),
+          text: new Text({
+            text: String(wp.index),
+            font: "700 11px Consolas, monospace",
+            fill: new Fill({ color: "#090B0F" }),
+            textAlign: "center",
+            textBaseline: "middle",
+          }),
         }),
-      })
-    );
-    src.addFeature(directFeature);
-
-    const optFeature = new Feature({
-      geometry: new LineString(route.coordinates),
-    });
-    optFeature.setStyle([
-      new Style({ stroke: new Stroke({ color: "rgba(14, 165, 233, 0.35)", width: 8 }) }),
-      new Style({ stroke: new Stroke({ color: "#0ea5e9", width: 3.5 }) }),
-    ]);
-    src.addFeature(optFeature);
-
-    const startPin = new Feature({ geometry: new Point(startCoord) });
-    startPin.setStyle(
-      new Style({
-        image: new CircleStyle({
-          radius: 6,
-          fill: new Fill({ color: "#10b981" }),
-          stroke: new Stroke({ color: "#ffffff", width: 2 }),
+        new Style({
+          text: new Text({
+            text: `${wp.roleTag.toUpperCase()} · ${wp.label}`,
+            textAlign: "left",
+            textBaseline: "middle",
+            offsetX: 16,
+            font: "700 9.5px Consolas, monospace",
+            fill: new Fill({
+              color:
+                wp.badgeColor === "#EF4444"
+                  ? "#FCA5A5"
+                  : wp.badgeColor === "#F59E0B"
+                    ? "#FDE68A"
+                    : "#E2E8F0",
+            }),
+            backgroundFill: new Fill({ color: "#12161E" }),
+            backgroundStroke: new Stroke({ color: wp.badgeColor, width: 1 }),
+            padding: [3, 6, 3, 6],
+          }),
         }),
-      })
-    );
-    src.addFeature(startPin);
+      ]);
+      src.addFeature(nodeFeature);
+    }
+  }, [waypointNodes, routeSegments]);
 
-    const endPin = new Feature({ geometry: new Point(endCoord) });
-    endPin.setStyle(
-      new Style({
-        image: new CircleStyle({
-          radius: 6,
-          fill: new Fill({ color: "#f97316" }),
-          stroke: new Stroke({ color: "#ffffff", width: 2 }),
-        }),
-      })
-    );
-    src.addFeature(endPin);
-  }, [showRoute, route, startCoord, endCoord]);
-
-  // Safe EVA range ring
+  // Render SOLID 5.5 km EVA SAFE RADIUS Circle
   useEffect(() => {
     const src = safeRangeSourceRef.current;
     if (!src) return;
     src.clear();
-    if (telemetry.maxSafeRangeM <= 0) return;
-    const ring = buildMarsCircleRing(77.4509, 18.4446, telemetry.maxSafeRangeM);
+    const radiusM =
+      telemetry.maxSafeRangeM > 0 ? telemetry.maxSafeRangeM : 5500;
+    const ring = buildMarsCircleRing(77.4509, 18.4446, radiusM);
     if (ring.length === 0) return;
+
+    const isAbort = telemetry.evaStatus === "ABORT";
+    const isCaution = telemetry.evaStatus === "CAUTION";
+    const strokeCol = isAbort
+      ? "rgba(239, 68, 68, 0.75)"
+      : isCaution
+        ? "rgba(245, 158, 11, 0.75)"
+        : "rgba(34, 197, 94, 0.55)";
 
     const circleFeature = new Feature({ geometry: new Polygon([ring]) });
     circleFeature.setStyle(
       new Style({
         stroke: new Stroke({
-          color:
-            telemetry.evaStatus === "CAUTION"
-              ? "rgba(245, 158, 11, 0.85)"
-              : "rgba(16, 185, 129, 0.4)",
-          width: 1.6,
-          lineDash: [7, 6],
+          color: strokeCol,
+          width: 1.6, // 100% SOLID (no lineDash)
+        }),
+        text: new Text({
+          text: isAbort
+            ? "PERIMETER LOCKED · RETURN TO HAB"
+            : "5.5 km EVA SAFE RADIUS",
+          font: "700 10px Consolas, monospace",
+          fill: new Fill({ color: isAbort ? "#FCA5A5" : "#4ADE80" }),
+          stroke: new Stroke({ color: "#090B0F", width: 3 }),
         }),
       })
     );
     src.addFeature(circleFeature);
   }, [telemetry.maxSafeRangeM, telemetry.evaStatus]);
 
+  // Real OpenLayers Camera Fly Animation
   useEffect(() => {
     if (!cameraRequest || !mapRef.current) return;
     mapRef.current.getView().animate({
       center: cameraRequest.preset.center,
       zoom: cameraRequest.preset.zoom,
-      duration: 600,
+      duration: 450,
     });
   }, [cameraRequest]);
 
+  // Real OpenLayers Zoom In / Zoom Out Signal
   useEffect(() => {
     if (!zoomSignal || !mapRef.current) return;
     const view = mapRef.current.getView();
-    const cur = view.getZoom() ?? 11;
-    view.animate({ zoom: cur + zoomSignal.delta, duration: 220 });
+    const cur = view.getZoom() ?? 12.2;
+    view.animate({
+      zoom: Math.max(1.5, Math.min(16, cur + zoomSignal.delta)),
+      duration: 200,
+    });
   }, [zoomSignal]);
 
-  useEffect(() => {
-    onLiveDrawRef.current = onLiveDrawLine;
-  }, [onLiveDrawLine]);
-
-  useEffect(() => {
-    onFinishDrawRef.current = onFinishDrawLine;
-  }, [onFinishDrawLine]);
-
-  // NASA Trek Interactive Draw Line Tool
-  useEffect(() => {
-    const map = mapRef.current;
-    const drawnSource = drawnSourceRef.current;
-    if (!map || !drawnSource) return;
-
-    if (drawInteractionRef.current) {
-      map.removeInteraction(drawInteractionRef.current);
-      drawInteractionRef.current = null;
-    }
-
-    if (isDrawingLine) {
-      drawnSource.clear();
-      const draw = new Draw({
-        source: drawnSource,
-        type: "LineString",
-        stopClick: true,
-        style: [
-          new Style({
-            stroke: new Stroke({ color: "rgba(2, 132, 199, 0.4)", width: 7 }),
-          }),
-          new Style({
-            stroke: new Stroke({ color: "#38bdf8", width: 3.5, lineDash: [8, 6] }),
-          }),
-          new Style({
-            image: new CircleStyle({
-              radius: 6,
-              fill: new Fill({ color: "#0284c7" }),
-              stroke: new Stroke({ color: "#ffffff", width: 2 }),
-            }),
-          }),
-        ],
-      });
-
-      let sketchGeom: LineString | null = null;
-      let lastThrottleTime = 0;
-
-      draw.on("drawstart", (evt) => {
-        sketchGeom = evt.feature.getGeometry() as LineString;
-        if (sketchGeom) {
-          sketchGeom.on("change", () => {
-            const now = performance.now();
-            if (now - lastThrottleTime < 40) return; // 25 FPS super responsive update
-            lastThrottleTime = now;
-            if (!sketchGeom) return;
-            const coords = sketchGeom.getCoordinates() as [number, number][];
-            if (coords && coords.length >= 2) {
-              const liveProfile = computeLineElevationProfile(coords);
-              onLiveDrawRef.current?.(liveProfile);
-            }
-          });
-        }
-      });
-
-      draw.on("drawend", (evt) => {
-        sketchGeom = null;
-        const geom = evt.feature.getGeometry() as LineString;
-        if (geom) {
-          const coords = geom.getCoordinates() as [number, number][];
-          const result = computeLineElevationProfile(coords);
-          onFinishDrawRef.current?.(result);
-        }
-      });
-
-      map.addInteraction(draw);
-      drawInteractionRef.current = draw;
-    }
-
-    return () => {
-      if (drawInteractionRef.current && mapRef.current) {
-        mapRef.current.removeInteraction(drawInteractionRef.current);
-        drawInteractionRef.current = null;
-      }
-    };
-  }, [isDrawingLine]);
-
-  useEffect(() => {
-    if (drawnRouteCoords === null && drawnSourceRef.current) {
-      drawnSourceRef.current.clear();
-    }
-  }, [drawnRouteCoords]);
-
+  // Sync Elevation Profile Hover Dot onto Real OpenLayers Map
   useEffect(() => {
     const src = hoverSourceRef.current;
     if (!src) return;
@@ -670,51 +648,73 @@ export function MarsBingMapViewport({
   }, [hoverProfileCoord]);
 
   return (
-    <div className={`relative flex-1 w-full h-full bg-[#090c12] overflow-hidden ${mapDimension === "3D" ? "mars-viewport-3d" : "mars-viewport-2d"}`}>
+    <div
+      style={{
+        borderColor:
+          activeTab === "science" && telemetry.evaStatus !== "ABORT"
+            ? "#22C55E"
+            : "transparent",
+      }}
+      className={`relative flex-1 w-full h-full bg-[#090B0F] overflow-hidden select-none ${
+        activeTab === "science" && telemetry.evaStatus !== "ABORT"
+          ? "border-2"
+          : ""
+      }`}
+    >
+      {/* Real Interactive OpenLayers Viewport */}
       <div
         ref={containerRef}
         className={`w-full h-full ${
-          isDrawingLine
-            ? "cursor-crosshair"
-            : pickMode !== "inspect"
-              ? "cursor-crosshair"
-              : "cursor-grab"
+          isMarkingMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"
         }`}
       />
 
-      {pickMode !== "inspect" && !isDrawingLine && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 rounded-full bg-white px-4 py-1.5 text-xs font-semibold text-slate-800 shadow-lg border border-sky-300 pointer-events-none">
-          Click inside Jezero EVA Grid to set{" "}
-          {pickMode === "pick_start" ? "START (Habitat)" : "DESTINATION"}
+      {/* Waypoint Marking Mode Indicator Pill */}
+      {isMarkingMode && (
+        <div
+          style={{
+            backgroundColor: themeTokens.panelBg,
+            borderColor: "#E86A33",
+            color: themeTokens.textPrimary,
+          }}
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3.5 py-1.5 border rounded-[2px] font-mono text-[10.5px] font-bold flex items-center gap-2 shadow-xl pointer-events-none"
+        >
+          <span className="w-2 h-2 rounded-full bg-[#E86A33] animate-pulse" />
+          <span className="text-[#E86A33]">{nextWaypointPrompt}</span>
+          <span style={{ color: themeTokens.textSecondary }}>
+            · Drag/Scroll anytime to pan &amp; zoom
+          </span>
         </div>
       )}
 
-      {/* NASA Trek Scale Bar & Cursor Status Bar */}
-      <div className="absolute bottom-4 right-4 z-20 flex flex-col items-end gap-1.5 pointer-events-none select-none">
-        {/* Scale Line Bar */}
-        <div className="flex flex-col items-end">
-          <span className="text-[12px] font-bold text-white font-mono [text-shadow:0_1px_3px_rgba(0,0,0,0.9),0_0_2px_rgba(0,0,0,0.9)] mb-0.5">
-            {mapScale.text}
+      {/* Bottom-Right Docked Map Scale Bar (Matching UI1.figcraft) */}
+      <div
+        style={{
+          backgroundColor: themeTokens.panelBg,
+          borderColor: themeTokens.borderColor,
+        }}
+        className="absolute bottom-3 right-3 z-20 min-w-[316px] h-[28px] border rounded-[2px] px-3 flex items-center justify-between gap-3 pointer-events-none"
+      >
+        <div className="flex items-center gap-2">
+          <div className="w-[40px] h-[2px] bg-[#F8FAFC] shrink-0" />
+          <span
+            style={{ color: themeTokens.textPrimary }}
+            className="font-mono text-[10px] font-bold"
+          >
+            {mapScaleText}
           </span>
-          <div
-            className="w-[140px] h-2.5 border-b-2 border-l-2 border-r-2 border-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]"
-          />
         </div>
-
-        {/* Lat, Lon & Elev */}
-        {showProbeHud && cursorSample && (
-          <div className="flex items-center gap-1.5 text-xs font-mono text-white [text-shadow:0_1px_3px_rgba(0,0,0,0.9),0_0_2px_rgba(0,0,0,0.9)] font-semibold">
-            <span>Lat: {cursorSample.lat.toFixed(5)}°,</span>
-            <span>Lon: {cursorSample.lon.toFixed(5)}°,</span>
-            <span className="text-sky-300">
-              Elev: {cursorSample.elevationM != null ? `${cursorSample.elevationM}m` : "—"}
-            </span>
-          </div>
-        )}
+        <span
+          style={{ color: themeTokens.textSecondary }}
+          className="font-mono text-[10px] font-bold"
+        >
+          | &nbsp;{cursorSample.lat.toFixed(4)} N &nbsp;
+          {cursorSample.lon.toFixed(4)} E &nbsp;
+          {cursorSample.elevationM !== null
+            ? `${Math.round(cursorSample.elevationM)} m`
+            : "-2568 m"}
+        </span>
       </div>
-
-      {/* Clean Bing-Maps-style Bottom-Right Attribution Bar (hidden) */}
     </div>
   );
 }
-
