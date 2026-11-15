@@ -35,6 +35,7 @@ import {
 import { MarsTelemetrySnapshot } from "@/lib/marsTelemetry";
 import { TerrainSample, getTerrainGrid } from "@/lib/marsTerrain";
 import {
+  BasemapId,
   RouteSegment,
   ThemeTokens,
   WaypointNode,
@@ -57,7 +58,7 @@ interface MarsBingMapViewportProps {
   waypointNodes: WaypointNode[];
   routeSegments: RouteSegment[];
   isMarkingMode: boolean;
-  nextWaypointPrompt: string;
+  nextWaypointPrompt?: string;
   onMapClickCoordinate: (coord: [number, number]) => void;
   onSelectPlace: (place: ScienceTargetFeature) => void;
   telemetry: MarsTelemetrySnapshot;
@@ -67,6 +68,8 @@ interface MarsBingMapViewportProps {
   themeTokens: ThemeTokens;
   activeTab: WorkbenchTabId;
   bottomProfilerOpen: boolean;
+  onDeleteWaypoint?: (waypointId: string, index?: number) => void;
+  activeBasemapId?: BasemapId;
 }
 
 export function MarsBingMapViewport({
@@ -75,7 +78,6 @@ export function MarsBingMapViewport({
   waypointNodes,
   routeSegments,
   isMarkingMode,
-  nextWaypointPrompt,
   onMapClickCoordinate,
   onSelectPlace,
   telemetry,
@@ -85,6 +87,7 @@ export function MarsBingMapViewport({
   themeTokens,
   activeTab,
   bottomProfilerOpen,
+  onDeleteWaypoint,
 }: MarsBingMapViewportProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<Map | null>(null);
@@ -97,6 +100,8 @@ export function MarsBingMapViewport({
   const isMarkingRef = useRef<boolean>(isMarkingMode);
   const onMapClickRef = useRef(onMapClickCoordinate);
   const onSelectPlaceRef = useRef(onSelectPlace);
+  const onDeleteWaypointRef = useRef(onDeleteWaypoint);
+  const waypointNodesRef = useRef(waypointNodes);
 
   const [cursorSample, setCursorSample] = useState<TerrainSample>({
     inJezeroDem: true,
@@ -120,6 +125,14 @@ export function MarsBingMapViewport({
   useEffect(() => {
     onSelectPlaceRef.current = onSelectPlace;
   }, [onSelectPlace]);
+
+  useEffect(() => {
+    onDeleteWaypointRef.current = onDeleteWaypoint;
+  }, [onDeleteWaypoint]);
+
+  useEffect(() => {
+    waypointNodesRef.current = waypointNodes;
+  }, [waypointNodes]);
 
   // Initialize Real OpenLayers Mars Map (IAU_2015:49900 + NASA Trek WMTS + Interactive Pan/Zoom/Click)
   useEffect(() => {
@@ -158,13 +171,19 @@ export function MarsBingMapViewport({
         });
 
         const tileLayer = new TileLayer({
+          className: "ol-layer-raster",
           visible: initial.visible,
           opacity: initial.opacity,
+          minZoom: cfg.minZoom,
+          maxZoom: 22, // Keep visible and oversample past source maxZoom so map never turns black
+          preload: 0,
           source: new XYZ({
             projection: marsProjection,
             tileGrid,
             crossOrigin: "anonymous",
             wrapX: false,
+            transition: 0,
+            maxZoom: cfg.maxZoom,
             tileUrlFunction: (tileCoord) => {
               if (!tileCoord) return undefined;
               const [z, x, y] = tileCoord;
@@ -195,6 +214,7 @@ export function MarsBingMapViewport({
       } else if (cfg.protocol === "image_overlay") {
         const dataUrl = terrainGrid.renderSlopeOverlayDataUrl();
         const imgLayer = new ImageLayer({
+          className: "ol-layer-raster",
           visible: initial.visible,
           opacity: initial.opacity,
           source: new ImageStatic({
@@ -222,6 +242,7 @@ export function MarsBingMapViewport({
         })
     );
     const hazardLayer = new VectorLayer({
+      className: "ol-layer-vector",
       visible: layerStates.hazard_zones?.visible ?? true,
       opacity: layerStates.hazard_zones?.opacity ?? 0.9,
       source: new VectorSource({ features: hazardFeatures }),
@@ -238,13 +259,13 @@ export function MarsBingMapViewport({
           }),
           text: isDustTrap
             ? new Text({
-                text: "! SEITAH DUST TRAP",
-                font: "700 10px Consolas, monospace",
-                fill: new Fill({ color: "#FCA5A5" }),
-                backgroundFill: new Fill({ color: "#1E0E10" }),
-                backgroundStroke: new Stroke({ color: "#EF4444", width: 1 }),
-                padding: [4, 7, 4, 7],
-              })
+              text: "! SEITAH DUST TRAP",
+              font: "700 10px Consolas, monospace",
+              fill: new Fill({ color: "#FCA5A5" }),
+              backgroundFill: new Fill({ color: "#1E0E10" }),
+              backgroundStroke: new Stroke({ color: "#EF4444", width: 1 }),
+              padding: [4, 7, 4, 7],
+            })
             : undefined,
         });
       },
@@ -255,12 +276,22 @@ export function MarsBingMapViewport({
     // 2. SOLID 5.5 km EVA SAFE RADIUS Circle
     const safeRangeSource = new VectorSource();
     safeRangeSourceRef.current = safeRangeSource;
-    orderedLayers.push(new VectorLayer({ source: safeRangeSource }));
+    orderedLayers.push(
+      new VectorLayer({
+        className: "ol-layer-vector",
+        source: safeRangeSource,
+      })
+    );
 
     // 3. SOLID Multi-Point Route Segments & Numbered Waypoints (1 -> 2 -> 3 -> 4)
     const routeSource = new VectorSource();
     routeSourceRef.current = routeSource;
-    orderedLayers.push(new VectorLayer({ source: routeSource }));
+    orderedLayers.push(
+      new VectorLayer({
+        className: "ol-layer-vector",
+        source: routeSource,
+      })
+    );
 
     // 4. Rectangular Pill POI Pins (matching UI1.figcraft styling)
     const placeFeatures = ALL_MARS_PLACES.map(
@@ -271,6 +302,7 @@ export function MarsBingMapViewport({
         })
     );
     const placesLayer = new VectorLayer({
+      className: "ol-layer-vector",
       visible: layerStates.science_targets?.visible ?? true,
       opacity: layerStates.science_targets?.opacity ?? 1.0,
       source: new VectorSource({ features: placeFeatures }),
@@ -339,13 +371,19 @@ export function MarsBingMapViewport({
     // 5. Active Highlighted POI Halo
     const activePinSource = new VectorSource();
     activePinSourceRef.current = activePinSource;
-    orderedLayers.push(new VectorLayer({ source: activePinSource }));
+    orderedLayers.push(
+      new VectorLayer({
+        className: "ol-layer-vector",
+        source: activePinSource,
+      })
+    );
 
     // 6. Elevation Profile Hover Pin
     const hoverSource = new VectorSource();
     hoverSourceRef.current = hoverSource;
     orderedLayers.push(
       new VectorLayer({
+        className: "ol-layer-vector",
         source: hoverSource,
         style: new Style({
           image: new CircleStyle({
@@ -371,6 +409,9 @@ export function MarsBingMapViewport({
         projection: marsProjection,
         center: [77.425, 18.45],
         zoom: 12.2,
+        minZoom: 2,
+        maxZoom: 16,
+        showFullExtent: true,
         resolutions: VIEW_RESOLUTIONS,
         constrainResolution: false,
         extent: [-180, -90, 180, 90],
@@ -421,31 +462,97 @@ export function MarsBingMapViewport({
     const updateScaleBar = () => {
       const view = map.getView();
       const res = view.getResolution();
-      if (!res) return;
+      if (!res || !Number.isFinite(res)) return;
       const center = view.getCenter() || [77.425, 18.45];
-      const lat = center[1];
+      const lat = Math.max(
+        -89.9,
+        Math.min(89.9, Number.isFinite(center[1]) ? center[1] : 18.45)
+      );
       const latRad = (lat * Math.PI) / 180;
-      const metersPerDegree = MARS_METERS_PER_DEGREE * Math.cos(latRad);
+      const metersPerDegree = Math.max(
+        1,
+        MARS_METERS_PER_DEGREE * Math.cos(latRad)
+      );
       const metersPerPixel = res * metersPerDegree;
       const totalMeters = 72 * metersPerPixel;
 
       let text = "500 m";
-      if (totalMeters >= 100_000) {
+      if (!Number.isFinite(totalMeters) || totalMeters <= 0) {
+        text = "1000 km";
+      } else if (totalMeters >= 100_000) {
         text = `${Math.round(totalMeters / 1000)} km`;
       } else if (totalMeters >= 1000) {
         text = `${(totalMeters / 1000).toFixed(1)} km`;
       } else {
         text = `${Math.max(10, Math.round(totalMeters / 10) * 10)} m`;
       }
-      setMapScaleText(text);
+      setMapScaleText((prev) => (prev !== text ? text : prev));
     };
 
-    map.on("postrender", updateScaleBar);
+    map.on("moveend", updateScaleBar);
     updateScaleBar();
+
+    const viewport = map.getViewport();
+    const handleContextMenu = (e: MouseEvent) => {
+      e.preventDefault();
+      const pixel = map.getEventPixel(e);
+      let foundWpId: string | null = null;
+      let foundWpIndex: number | null = null;
+
+      // 1. Check feature at pixel with hit tolerance
+      map.forEachFeatureAtPixel(
+        pixel,
+        (feature) => {
+          const wpId = feature.get("waypointId") as string | undefined;
+          const wpIdx = feature.get("waypointIndex") as number | undefined;
+          if (wpId) {
+            foundWpId = wpId;
+            foundWpIndex = wpIdx ?? null;
+            return true;
+          }
+          return false;
+        },
+        { hitTolerance: 14 }
+      );
+
+      // 2. Coordinate proximity fallback
+      if (!foundWpId) {
+        const clickCoord = map.getCoordinateFromPixel(pixel);
+        if (clickCoord) {
+          const [lon, lat] = clickCoord;
+          const res = map.getView().getResolution() || 0.0001;
+          const threshold = res * 22; // 22px hit radius
+          let closestDist = Infinity;
+          let closestWp: WaypointNode | null = null;
+          for (const wp of waypointNodesRef.current) {
+            const d = Math.hypot(wp.lon - lon, wp.lat - lat);
+            if (d < threshold && d < closestDist) {
+              closestDist = d;
+              closestWp = wp;
+            }
+          }
+          if (closestWp) {
+            foundWpId = (closestWp as WaypointNode).id;
+            foundWpIndex = (closestWp as WaypointNode).index;
+          }
+        }
+      }
+
+      if (foundWpId && onDeleteWaypointRef.current) {
+        onDeleteWaypointRef.current(foundWpId, foundWpIndex ?? undefined);
+      }
+    };
+
+    if (viewport) {
+      viewport.addEventListener("contextmenu", handleContextMenu);
+    }
 
     mapRef.current = map;
     return () => {
-      map.un("postrender", updateScaleBar);
+      if (viewport) {
+        viewport.removeEventListener("contextmenu", handleContextMenu);
+      }
+      map.un("moveend", updateScaleBar);
       map.setTarget(undefined);
       mapRef.current = null;
     };
@@ -539,6 +646,8 @@ export function MarsBingMapViewport({
       const nodeFeature = new Feature({
         geometry: new Point(wp.coordinates),
       });
+      nodeFeature.set("waypointId", wp.id);
+      nodeFeature.set("waypointIndex", wp.index);
       nodeFeature.setStyle([
         new Style({
           image: new CircleStyle({
@@ -556,7 +665,7 @@ export function MarsBingMapViewport({
         }),
         new Style({
           text: new Text({
-            text: `${wp.roleTag.toUpperCase()} · ${wp.label}`,
+            text: `${wp.index}. ${wp.label.toUpperCase()}`,
             textAlign: "left",
             textBaseline: "middle",
             offsetX: 16,
@@ -633,7 +742,7 @@ export function MarsBingMapViewport({
     const view = mapRef.current.getView();
     const cur = view.getZoom() ?? 12.2;
     view.animate({
-      zoom: Math.max(1.5, Math.min(16, cur + zoomSignal.delta)),
+      zoom: Math.max(2, Math.min(16, cur + zoomSignal.delta)),
       duration: 200,
     });
   }, [zoomSignal]);
@@ -651,42 +760,23 @@ export function MarsBingMapViewport({
   return (
     <div
       style={{
+        backgroundColor: themeTokens.canvasBg,
         borderColor:
           activeTab === "science" && telemetry.evaStatus !== "ABORT"
             ? "#22C55E"
             : "transparent",
       }}
-      className={`relative flex-1 w-full h-full bg-[#090B0F] overflow-hidden select-none ${
-        activeTab === "science" && telemetry.evaStatus !== "ABORT"
-          ? "border-2"
-          : ""
-      }`}
+      className={`relative flex-1 w-full h-full overflow-hidden select-none ${activeTab === "science" && telemetry.evaStatus !== "ABORT"
+        ? "border-2"
+        : ""
+        }`}
     >
       {/* Real Interactive OpenLayers Viewport */}
       <div
         ref={containerRef}
-        className={`w-full h-full ${
-          isMarkingMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"
-        }`}
+        className={`w-full h-full ${isMarkingMode ? "cursor-crosshair" : "cursor-grab active:cursor-grabbing"
+          }`}
       />
-
-      {/* Waypoint Marking Mode Indicator Pill */}
-      {isMarkingMode && (
-        <div
-          style={{
-            backgroundColor: themeTokens.panelBg,
-            borderColor: "#E86A33",
-            color: themeTokens.textPrimary,
-          }}
-          className="absolute top-3 left-1/2 -translate-x-1/2 z-10 px-3.5 py-1.5 border rounded-[2px] font-mono text-[10.5px] font-bold flex items-center gap-2 shadow-xl pointer-events-none"
-        >
-          <span className="w-2 h-2 rounded-full bg-[#E86A33] animate-pulse" />
-          <span className="text-[#E86A33]">{nextWaypointPrompt}</span>
-          <span style={{ color: themeTokens.textSecondary }}>
-            · Drag/Scroll anytime to pan &amp; zoom
-          </span>
-        </div>
-      )}
 
       {/* Bottom-Right Docked Map Scale Bar (Matching UI1.figcraft) */}
       <div
@@ -694,7 +784,7 @@ export function MarsBingMapViewport({
           backgroundColor: themeTokens.panelBg,
           borderColor: themeTokens.borderColor,
         }}
-        className="absolute bottom-3 right-3 z-20 min-w-[316px] h-[28px] border rounded-[2px] px-3 flex items-center justify-between gap-3 pointer-events-none"
+        className="absolute bottom-3 right-3 z-20 min-w-[400px] h-[28px] border rounded-[2px] px-3 flex items-center justify-between gap-3 pointer-events-none"
       >
         <div className="flex items-center gap-2">
           <div className="w-[40px] h-[2px] bg-[#F8FAFC] shrink-0" />
@@ -705,15 +795,28 @@ export function MarsBingMapViewport({
             {mapScaleText}
           </span>
         </div>
-        <span
-          style={{ color: themeTokens.textSecondary }}
-          className="font-mono text-[10px] font-bold"
-        >
-          | &nbsp;{cursorSample.lat.toFixed(4)} N &nbsp;
-          {cursorSample.lon.toFixed(4)} E &nbsp;
-          {cursorSample.elevationM !== null
-            ? `${Math.round(cursorSample.elevationM)} m`
-            : "— m"}
+        <span className="font-mono text-[10px] font-bold flex items-center gap-2.5">
+          <span style={{ color: themeTokens.textMuted }}>|</span>
+          <span>
+            <span style={{ color: themeTokens.textMuted }}>Lat:</span>{" "}
+            <span className="text-white">
+              {Math.abs(cursorSample.lat).toFixed(4)}° {cursorSample.lat >= 0 ? "N" : "S"}
+            </span>
+          </span>
+          <span>
+            <span style={{ color: themeTokens.textMuted }}>Lon:</span>{" "}
+            <span className="text-white">
+              {Math.abs(cursorSample.lon).toFixed(4)}° {cursorSample.lon >= 0 ? "E" : "W"}
+            </span>
+          </span>
+          <span>
+            <span style={{ color: themeTokens.textMuted }}>Elev:</span>{" "}
+            <span className="text-white">
+              {cursorSample.elevationM !== null
+                ? `${Math.round(cursorSample.elevationM)} m`
+                : "— m"}
+            </span>
+          </span>
         </span>
       </div>
     </div>

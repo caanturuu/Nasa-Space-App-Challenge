@@ -21,18 +21,18 @@ export function MarsSplitBottomProfiler({
   const [hoveredSunIdx, setHoveredSunIdx] = useState<number | null>(null);
 
   const isDark = themeTokens.mode === "dark";
-  const panelBg = isDark ? "#0B0D12" : "#F8FAFC";
-  const headerBg = isDark ? "#0E1117" : "#F1F5F9";
-  const borderCol = isDark ? "#252B37" : "#CBD5E1";
-  const gridCol = isDark ? "#1B202B" : "#E2E8F0";
+  const panelBg = isDark ? themeTokens.panelBg : "#F8FAFC";
+  const headerBg = isDark ? themeTokens.subHeaderBg : "#F1F5F9";
+  const borderCol = themeTokens.borderColor;
+  const gridCol = themeTokens.chartGrid;
 
-  // Left Chart: Elevation & Slope Geometry (540 x 195)
+  // Left Chart: Elevation & Slope Geometry (540 x 166)
   const samples = route.profileSamples;
   const xMin = 56;
   const xMax = 516;
   const xW = xMax - xMin;
-  const yTop = 30;
-  const yBottom = 144;
+  const yTop = 26;
+  const yBottom = 130;
   const yH = yBottom - yTop;
 
   // Dynamic nice Y bounds rounded to 50m so elevation curves fill cleanly
@@ -63,16 +63,19 @@ export function MarsSplitBottomProfiler({
   const activeSample = samples[activeElevIdx];
   const activeSampleColor = activeSample?.color ?? "#22C55E";
 
-  // Right Chart: Sun Angle Geometry (539 x 195)
+  // Right Chart: Sun Angle Geometry (539 x 166)
   const sxMin = 52;
   const sxMax = 516;
   const sxW = sxMax - sxMin;
-  const syTop = 32;
-  const syZero = 128; // 0° Horizon line
+  const syTop = 26;
+  const syZero = 120; // 0° Horizon line
   const sySpan = syZero - syTop; // 0° .. 360°
 
   const mapSunX = (hour: number) => sxMin + (hour / 24) * sxW;
-  const mapSunY = (degVal: number) => syZero - (degVal / 360) * sySpan;
+  const mapSunY = (degVal: number) => {
+    const clamped = Math.max(-50, Math.min(360, degVal));
+    return syZero - (clamped / 360) * sySpan;
+  };
 
   const activeSunHour =
     hoveredSunIdx !== null && sunSamples[hoveredSunIdx]
@@ -105,7 +108,7 @@ export function MarsSplitBottomProfiler({
         backgroundColor: panelBg,
         borderColor: borderCol,
       }}
-      className="h-[232px] w-full border-t grid grid-cols-2 shrink-0 select-none"
+      className="h-[216px] w-full border-t grid grid-cols-2 shrink-0 select-none pb-1"
     >
       {/* ================= LEFT HALF: ELEVATION & SLOPE CHART ================= */}
       <div
@@ -117,38 +120,44 @@ export function MarsSplitBottomProfiler({
             backgroundColor: headerBg,
             borderColor: borderCol,
           }}
-          className="h-[36px] px-4 border-b flex items-center justify-between shrink-0"
+          className="h-[34px] px-4 border-b flex items-center justify-between shrink-0"
         >
           <span
             style={{ color: themeTokens.textPrimary }}
             className="font-mono text-[11px] font-bold tracking-wide uppercase"
           >
-            ELEVATION &amp; SLOPE (JARAK {route.totalDistanceKm.toFixed(2)} km)
+            ELEVATION &amp; SLOPE {samples.length >= 2 ? `(JARAK ${route.totalDistanceKm.toFixed(2)} km)` : ""}
           </span>
-          <div className="flex items-center gap-5 font-mono text-[10.5px] font-bold">
-            <span className="text-[#22C55E]">ASC +{route.totalAscentM}m</span>
-            <span
-              style={{
-                color:
-                  route.maxSlopeDeg > 15
-                    ? "#EF4444"
-                    : route.maxSlopeDeg >= 10
-                      ? "#F59E0B"
-                      : "#22C55E",
-              }}
-            >
-              MAX {route.maxSlopeDeg.toFixed(1)}°{" "}
-              {route.maxSlopeDeg > 15
-                ? "RED"
-                : route.maxSlopeDeg >= 10
-                  ? "STEEP"
-                  : "SAFE"}
+          {samples.length >= 2 ? (
+            <div className="flex items-center gap-5 font-mono text-[10.5px] font-bold">
+              <span className="text-[#22C55E]">ASC +{route.totalAscentM}m</span>
+              <span
+                style={{
+                  color:
+                    route.maxSlopeDeg > 15
+                      ? "#EF4444"
+                      : route.maxSlopeDeg >= 10
+                        ? "#F59E0B"
+                        : "#22C55E",
+                }}
+              >
+                MAX {route.maxSlopeDeg.toFixed(1)}°
+                {route.maxSlopeDeg > 15
+                  ? " RED"
+                  : route.maxSlopeDeg >= 10
+                    ? " STEEP"
+                    : ""}
+              </span>
+            </div>
+          ) : (
+            <span className="font-mono text-[10px] font-bold text-[#64748B]">
+              NO DATA
             </span>
-          </div>
+          )}
         </div>
 
         <div
-          className="relative flex-1 w-full cursor-crosshair"
+          className="relative flex-1 w-full min-h-0 cursor-crosshair pb-1 flex items-center justify-center"
           onMouseMove={(e) => {
             if (samples.length < 2) return;
             const rect = e.currentTarget.getBoundingClientRect();
@@ -165,16 +174,15 @@ export function MarsSplitBottomProfiler({
           }}
         >
           {samples.length < 2 ? (
-            <div className="w-full h-full flex items-center justify-center font-mono text-xs text-[#64748B]">
-              Click at least 2 points on the map (Start -&gt; Second/End Point) to
-              render Elevation &amp; Slope Profile
+            <div className="w-full h-full flex items-center justify-center font-mono text-sm font-bold tracking-widest uppercase text-[#64748B]">
+              No data
             </div>
           ) : (
-            <svg viewBox="0 0 540 195" className="w-full h-full">
+            <svg viewBox="0 0 540 166" className="w-full h-full max-h-[172px]" preserveAspectRatio="xMidYMid meet">
               {/* Y Axis Vertical Line */}
               <line
                 x1={xMin}
-                y1="22"
+                y1="20"
                 x2={xMin}
                 y2={yBottom}
                 stroke={borderCol}
@@ -291,12 +299,12 @@ export function MarsSplitBottomProfiler({
                     >
                       {activeSample.distanceKm.toFixed(2)} km ·{" "}
                       {activeSample.elevationM.toLocaleString("en-US")}m ·{" "}
-                      {activeSample.slopeDeg.toFixed(1)}°{" "}
+                      {activeSample.slopeDeg.toFixed(1)}°
                       {activeSample.slopeDeg > 15
-                        ? "RED"
+                        ? " RED"
                         : activeSample.slopeDeg >= 10
-                          ? "STEEP"
-                          : "SAFE"}
+                          ? " STEEP"
+                          : ""}
                     </text>
                   </g>
                 </g>
@@ -305,7 +313,7 @@ export function MarsSplitBottomProfiler({
               {/* X-Axis Distance Labels */}
               <text
                 x={xMin}
-                y="168"
+                y="152"
                 fill="#94A3B8"
                 fontSize="9"
                 fontFamily="Consolas, monospace"
@@ -314,7 +322,7 @@ export function MarsSplitBottomProfiler({
               </text>
               <text
                 x={(xMin + xMax) / 2}
-                y="168"
+                y="152"
                 textAnchor="middle"
                 fill={
                   route.maxSlopeDeg > 15
@@ -332,7 +340,7 @@ export function MarsSplitBottomProfiler({
               </text>
               <text
                 x={xMax}
-                y="168"
+                y="152"
                 textAnchor="end"
                 fill="#94A3B8"
                 fontSize="9"
@@ -352,7 +360,7 @@ export function MarsSplitBottomProfiler({
             backgroundColor: headerBg,
             borderColor: borderCol,
           }}
-          className="h-[36px] px-4 border-b flex items-center justify-between shrink-0"
+          className="h-[34px] px-4 border-b flex items-center justify-between shrink-0"
         >
           <span
             style={{ color: themeTokens.textPrimary }}
@@ -360,26 +368,32 @@ export function MarsSplitBottomProfiler({
           >
             SUN ANGLE (AZIMUTH &amp; ELEVATION 24H)
           </span>
-          <div className="flex items-center gap-4 font-mono text-[10px]">
-            <span className="text-[#64748B] font-bold">JPL EPHEMERIS</span>
-            <span className="flex items-center gap-1.5 text-[#38BDF8] font-bold">
-              <span className="w-2 h-2 bg-[#38BDF8] inline-block" />
-              AZ {Math.round(activeSunPoint.azimuthDeg)}°
+          {samples.length >= 2 ? (
+            <div className="flex items-center gap-4 font-mono text-[10px]">
+              <span className="text-[#64748B] font-bold">JPL EPHEMERIS</span>
+              <span className="flex items-center gap-1.5 text-[#38BDF8] font-bold">
+                <span className="w-2 h-2 bg-[#38BDF8] inline-block" />
+                AZ {Math.round(activeSunPoint.azimuthDeg)}°
+              </span>
+              <span className="flex items-center gap-1.5 text-[#F59E0B] font-bold">
+                <span className="w-2 h-2 bg-[#F59E0B] inline-block" />
+                EL{" "}
+                {activeSunPoint.elevationDeg >= 0
+                  ? `+${Math.round(activeSunPoint.elevationDeg)}°`
+                  : `${Math.round(activeSunPoint.elevationDeg)}°`}
+              </span>
+            </div>
+          ) : (
+            <span className="font-mono text-[10px] font-bold text-[#64748B]">
+              NO DATA
             </span>
-            <span className="flex items-center gap-1.5 text-[#F59E0B] font-bold">
-              <span className="w-2 h-2 bg-[#F59E0B] inline-block" />
-              EL{" "}
-              {activeSunPoint.elevationDeg >= 0
-                ? `+${Math.round(activeSunPoint.elevationDeg)}°`
-                : `${Math.round(activeSunPoint.elevationDeg)}°`}
-            </span>
-          </div>
+          )}
         </div>
 
         <div
-          className="relative flex-1 w-full cursor-crosshair"
+          className="relative flex-1 w-full min-h-0 cursor-crosshair pb-1 flex items-center justify-center"
           onMouseMove={(e) => {
-            if (sunSamples.length === 0) return;
+            if (samples.length < 2 || sunSamples.length === 0) return;
             const rect = e.currentTarget.getBoundingClientRect();
             const svgX = ((e.clientX - rect.left) / rect.width) * 539;
             const frac = Math.max(0, Math.min(1, (svgX - sxMin) / sxW));
@@ -388,12 +402,17 @@ export function MarsSplitBottomProfiler({
           }}
           onMouseLeave={() => setHoveredSunIdx(null)}
         >
-          <svg viewBox="0 0 539 195" className="w-full h-full">
+          {samples.length < 2 ? (
+            <div className="w-full h-full flex items-center justify-center font-mono text-sm font-bold tracking-widest uppercase text-[#64748B]">
+              No data
+            </div>
+          ) : (
+            <svg viewBox="0 0 539 166" className="w-full h-full max-h-[172px]" preserveAspectRatio="xMidYMid meet">
             <line
               x1={sxMin}
-              y1="22"
+              y1="20"
               x2={sxMin}
-              y2="144"
+              y2={syZero}
               stroke={borderCol}
               strokeWidth="1"
             />
@@ -525,7 +544,7 @@ export function MarsSplitBottomProfiler({
             {/* X-Axis 24h Time Labels */}
             <text
               x={sxMin}
-              y="168"
+              y="152"
               fill="#94A3B8"
               fontSize="9"
               fontFamily="Consolas, monospace"
@@ -534,7 +553,7 @@ export function MarsSplitBottomProfiler({
             </text>
             <text
               x={mapSunX(4.8)}
-              y="168"
+              y="152"
               textAnchor="middle"
               fill="#94A3B8"
               fontSize="9"
@@ -544,7 +563,7 @@ export function MarsSplitBottomProfiler({
             </text>
             <text
               x={mapSunX(9.6)}
-              y="168"
+              y="152"
               textAnchor="middle"
               fill="#94A3B8"
               fontSize="9"
@@ -554,7 +573,7 @@ export function MarsSplitBottomProfiler({
             </text>
             <text
               x={mapSunX(13.4)}
-              y="168"
+              y="152"
               textAnchor="middle"
               fill="#F59E0B"
               fontSize="9"
@@ -565,7 +584,7 @@ export function MarsSplitBottomProfiler({
             </text>
             <text
               x={mapSunX(19.2)}
-              y="168"
+              y="152"
               textAnchor="middle"
               fill="#94A3B8"
               fontSize="9"
@@ -575,7 +594,7 @@ export function MarsSplitBottomProfiler({
             </text>
             <text
               x={sxMax}
-              y="168"
+              y="152"
               textAnchor="end"
               fill="#94A3B8"
               fontSize="9"
@@ -584,6 +603,7 @@ export function MarsSplitBottomProfiler({
               24:00
             </text>
           </svg>
+          )}
         </div>
       </div>
     </section>

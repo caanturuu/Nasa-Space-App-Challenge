@@ -29,6 +29,8 @@ export interface ScienceTargetProperties {
   summary: string;
   region?: string;
   inJezeroGrid?: boolean;
+  isUnexplored?: boolean;
+  confidence?: string;
 }
 
 export interface ScienceTargetFeature {
@@ -131,7 +133,7 @@ export const NASA_LAYERS: MarsLayerConfig[] = [
     category: "imagery",
     protocol: "wmts",
     tileSize: 256,
-    minZoom: 0,
+    minZoom: 8,
     maxZoom: 14,
     defaultOpacity: 1.0,
     defaultVisible: false,

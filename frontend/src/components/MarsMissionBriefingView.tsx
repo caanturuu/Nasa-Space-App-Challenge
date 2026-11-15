@@ -35,15 +35,13 @@ export function MarsMissionBriefingView({
         className="h-[56px] w-full border-b px-6 flex items-center justify-between shrink-0"
       >
         <div className="flex items-center gap-3">
-          <span className="w-[10px] h-[10px] bg-[#E86A33] rounded-[1px] inline-block" />
-          <span className="font-bold text-[14px] tracking-wider uppercase">
+          <img
+            src="/nasa-logo.svg"
+            alt="NASA Logo"
+            className="w-[38px] h-[32px] object-contain shrink-0"
+          />
+          <span className="font-extrabold text-[17px] tracking-wider uppercase">
             MARSWALK EXPLORER
-          </span>
-          <span
-            style={{ color: themeTokens.textMuted }}
-            className="font-mono text-[10.5px] tracking-wider uppercase ml-1"
-          >
-            // JEZERO CRATER SURFACE OPS
           </span>
         </div>
 

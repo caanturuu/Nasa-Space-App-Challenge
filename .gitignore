@@ -18,3 +18,7 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Markdown documentation
+*.md
+**/*.md
