@@ -10,7 +10,8 @@ export interface SunAnglePoint {
   azimuthDeg: number;   // Compass bearing (0° to 360°)
 }
 
-export function computeMarsSunAngles(latDeg: number, lonDeg: number): SunAnglePoint[] {
+export function computeMarsSunAngles(latDeg: number, _lonDeg?: number): SunAnglePoint[] {
+  void _lonDeg;
   const points: SunAnglePoint[] = [];
 
   // Fallback geometry only. Real az/el comes from /api/sun-angle (JPL Horizons)

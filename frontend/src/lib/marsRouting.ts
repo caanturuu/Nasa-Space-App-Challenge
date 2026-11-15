@@ -47,7 +47,7 @@ export interface EvaRouteResult {
 }
 
 const MODE_WEIGHTS: Record<PlannerMode, { slopeW: number; hazardW: number; scienceW: number }> = {
-  safest: { slopeW: 0.18, hazardW: 2.2, scienceW: 0.05 },
+  safest: { slopeW: 0.28, hazardW: 2.8, scienceW: 0.02 },
   balanced: { slopeW: 0.09, hazardW: 1.3, scienceW: 0.14 },
   max_science: { slopeW: 0.06, hazardW: 0.9, scienceW: 0.25 },
 };
@@ -208,7 +208,8 @@ export function planEvaRoute(
 
       const slopePenalty = weights.slopeW * cellSlope ** 1.4;
       const hazardPenalty = weights.hazardW * cellHaz;
-      const ascentPenalty = 0.04 * (elevDiff / Math.max(1, stepDistM)) * 100;
+      const ascentPenalty =
+        (mode === "safest" ? 0.08 : 0.04) * (elevDiff / Math.max(1, stepDistM)) * 100;
       const scienceDiscount = weights.scienceW * grid.scienceBonus[nIdx];
 
       const mult = Math.max(

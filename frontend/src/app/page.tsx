@@ -25,6 +25,7 @@ import {
 import { MarsBingMapViewport } from "@/components/MarsBingMapViewport";
 import { MarsSplitBottomProfiler } from "@/components/MarsSplitBottomProfiler";
 import { MarsMissionBriefingView } from "@/components/MarsMissionBriefingView";
+import { marsApiClient } from "@/services/apiClient";
 
 const COG_PATH =
   "M 13.55 6.77 L 16.24 6.98 L 16.24 9.26 L 13.55 9.47 L 12.92 11 L 14.67 13.05 L 13.05 14.67 L 11 12.92 L 9.47 13.55 L 9.26 16.24 L 6.98 16.24 L 6.77 13.55 L 5.24 12.92 L 3.19 14.67 L 1.57 13.05 L 3.32 11 L 2.69 9.47 L 0 9.26 L 0 6.98 L 2.69 6.77 L 3.32 5.24 L 1.57 3.19 L 3.19 1.57 L 5.24 3.32 L 6.77 2.69 L 6.98 0 L 9.26 0 L 9.47 2.69 L 11 3.32 L 13.05 1.57 L 14.67 3.19 L 12.92 5.24 Z";
@@ -45,7 +46,7 @@ export default function MarsWorkbenchPage() {
 
   // 2. OOP BasemapRegistry (Real OpenLayers NASA Trek WMTS Layers)
   const [activeBasemapId, setActiveBasemapId] =
-    useState<BasemapId>("jezero_ctx_6m");
+    useState<BasemapId>("viking_mdim21");
   const [showBasemapPanel, setShowBasemapPanel] = useState<boolean>(false);
 
   const basemapRegistry = useMemo(
@@ -60,7 +61,7 @@ export default function MarsWorkbenchPage() {
   // 3. View / Tab & Briefing Overlay State
   const [showBriefingModal, setShowBriefingModal] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<WorkbenchTabId>("overview");
-  const [showBottomProfiler, setShowBottomProfiler] = useState<boolean>(false);
+  const [showBottomProfiler, setShowBottomProfiler] = useState<boolean>(true);
 
   // 4. Live MEDA Telemetry & Contingency Scenario
   const [scenario, setScenario] = useState<ConditionScenario>("nominal");
@@ -82,9 +83,9 @@ export default function MarsWorkbenchPage() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/conditions/live?scenario=${scenario}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((payload: { realWeather?: RealWeather | null } | null) => {
+    marsApiClient
+      .getLiveConditions(scenario)
+      .then((payload) => {
         if (!cancelled) setRealWeather(payload?.realWeather ?? null);
       })
       .catch(() => {
@@ -101,14 +102,11 @@ export default function MarsWorkbenchPage() {
   );
 
   // 5. Real Geographic Waypoints (Start -> Second -> ... -> End)
-  const [activeCorridorId, setActiveCorridorId] =
-    useState<string>("corridor-kodiak");
   const [waypoints, setWaypoints] = useState<WaypointInput[]>(
-    EVARoutePlannerController.CORRIDOR_PRESETS[0].waypoints
+    EVARoutePlannerController.CORRIDOR_PRESETS[1].waypoints
   );
-  const [routingMode, setRoutingMode] = useState<PlannerMode>("safest");
-  const [maxSlopeLimit, setMaxSlopeLimit] = useState<number>(15.0);
-  const [usingSafeDetour, setUsingSafeDetour] = useState<boolean>(false);
+  const [routingMode] = useState<PlannerMode>("safest");
+  const [maxSlopeLimit] = useState<number>(14.0);
   const [isMarkingMode, setIsMarkingMode] = useState<boolean>(false);
   const [exportedBanner, setExportedBanner] = useState<string | null>(null);
 
@@ -152,23 +150,64 @@ export default function MarsWorkbenchPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEmergency, waypoints, routingMode, maxSlopeLimit, demIsReal]);
 
-  // Pre-compute preset summaries for Overview cards so every card shows real terrain math
-  const presetModels = useMemo(() => {
-    const life = new SuitLifeSupportModel();
-    return EVARoutePlannerController.CORRIDOR_PRESETS.map((preset) => {
-      const model = EVARoutePlannerController.computeRoute(
-        preset.waypoints,
-        "safest",
-        15.0,
-        true
-      );
-      const o2 = life.evaluate(model, false);
-      return { preset, model, o2 };
+  // Active Science Destination derived directly from the route's End Point
+  const activeScienceTarget = useMemo<ScienceTargetFeature | null>(() => {
+    if (waypoints.length === 0) return null;
+    const endWp = waypoints[waypoints.length - 1];
+
+    // Check if endWp corresponds to an existing Jezero science target
+    const catalogMatch = JEZERO_SCIENCE_TARGETS.features.find((feat) => {
+      if (
+        endWp.id.includes(feat.properties.id) ||
+        endWp.label.toLowerCase().includes(feat.properties.name.toLowerCase())
+      ) {
+        return true;
+      }
+      const dLon = Math.abs(endWp.lon - feat.geometry.coordinates[0]);
+      const dLat = Math.abs(endWp.lat - feat.geometry.coordinates[1]);
+      return dLon < 0.006 && dLat < 0.006;
     });
-    // Same cache-bust signal as computedRoute: preset cards must also pick up
-    // the real MOLA raster once it lands.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [demIsReal]);
+
+    if (catalogMatch) {
+      return {
+        ...catalogMatch,
+        properties: {
+          ...catalogMatch.properties,
+          elevation_m:
+            computedRoute.targetElevationM || catalogMatch.properties.elevation_m,
+        },
+        geometry: {
+          ...catalogMatch.geometry,
+          coordinates: [endWp.lon, endWp.lat],
+        },
+      };
+    }
+
+    // Unexplored Reconnaissance site for custom / uncataloged End Point
+    return {
+      type: "Feature",
+      properties: {
+        id: endWp.id,
+        name: `End Point (${endWp.lat.toFixed(4)}°N, ${endWp.lon.toFixed(4)}°E)`,
+        category: "Reconnaissance",
+        mission_ref: "MRO CRISM / CTX Orbital Survey",
+        mineral_signature: "Uncharacterized Regolith & Basaltic Debris",
+        science_score: 75,
+        elevation_m: computedRoute.targetElevationM || -2450,
+        summary:
+          "Virgin Martian terrain unvisited by surface rovers. High scientific priority for initial in-situ grab sampling, macro-texture logging, and regolith trafficability verification.",
+        region: "Jezero Crater, Mars",
+        inJezeroGrid: true,
+        isUnexplored: true,
+        confidence: "Orbital Remote Sensing (No Ground-Truth)",
+      },
+      geometry: {
+        type: "Point",
+        coordinates: [endWp.lon, endWp.lat],
+      },
+    };
+  }, [waypoints, computedRoute.targetElevationM]);
+
 
   // 7. Real OOP Suit O2 Fuel Gauge Calculation
   const lifeSupport = useMemo(() => {
@@ -203,16 +242,11 @@ export default function MarsWorkbenchPage() {
   const handleSelectTab = (tab: WorkbenchTabId) => {
     setActiveTab(tab);
     if (tab === "overview") {
-      setShowBottomProfiler(false);
-      setShowBasemapPanel(false);
-      setIsMarkingMode(false);
-    } else if (tab === "route") {
       setShowBottomProfiler(true);
       setShowBasemapPanel(false);
-      setIsMarkingMode(true);
     } else if (tab === "science") {
       setShowBottomProfiler(false);
-      setShowBasemapPanel(true);
+      setShowBasemapPanel(false);
       setIsMarkingMode(false);
     }
   };
@@ -220,82 +254,88 @@ export default function MarsWorkbenchPage() {
   // Handle clicking directly on the OpenLayers Mars map to set Start -> Second -> End Point
   const handleMapClickCoordinate = (coord: [number, number]) => {
     if (isEmergency) return;
-    if (!isMarkingMode && activeTab !== "route") return;
+    if (!isMarkingMode) return;
 
     const [lon, lat] = coord;
-    setUsingSafeDetour(false);
-    setWaypoints((prev) => {
-      const nextNum = prev.length + 1;
-      const defaultName =
-        nextNum === 1
-          ? `Start Point (${lat.toFixed(3)}°N)`
-          : nextNum === 2
-            ? `Second Point (${lat.toFixed(3)}°N)`
-            : `Point ${nextNum} (${lat.toFixed(3)}°N)`;
-      return [
-        ...prev,
-        {
-          id: `custom-${Date.now()}-${nextNum}`,
-          label: defaultName,
-          lon,
-          lat,
-        },
-      ];
-    });
+    const nextNum = waypoints.length + 1;
+    const defaultName =
+      nextNum === 1
+        ? `Start Point (${lat.toFixed(3)}°N)`
+        : nextNum === 2
+          ? `Point 2 (${lat.toFixed(3)}°N)`
+          : `Point ${nextNum} (${lat.toFixed(3)}°N)`;
+
+    setWaypoints((prev) => [
+      ...prev,
+      {
+        id: `custom-${Date.now()}-${nextNum}`,
+        label: defaultName,
+        lon,
+        lat,
+      },
+    ]);
+
     setShowBottomProfiler(true);
   };
 
   const handleStartFreshRoute = () => {
     setWaypoints([]);
-    setUsingSafeDetour(false);
-    setActiveTab("route");
+    setActiveTab("overview");
     setShowBottomProfiler(true);
     setIsMarkingMode(true);
   };
 
-  const handleUndoLastWaypoint = () => {
-    setWaypoints((prev) => prev.slice(0, -1));
+  const handleDeleteWaypoint = (waypointId: string, index?: number) => {
+    setWaypoints((prev) => {
+      let filtered = prev.filter((w) => w.id !== waypointId);
+      if (
+        filtered.length === prev.length &&
+        typeof index === "number" &&
+        index >= 1 &&
+        index <= prev.length
+      ) {
+        filtered = prev.filter((_, i) => i !== index - 1);
+      }
+      return filtered;
+    });
+    setExportedBanner("Waypoint deleted");
+    window.setTimeout(() => setExportedBanner(null), 2000);
   };
 
-  const handleSelectCorridorPreset = (corridorId: string) => {
-    const found = EVARoutePlannerController.CORRIDOR_PRESETS.find(
-      (c) => c.id === corridorId
-    );
-    if (!found) return;
-    setActiveCorridorId(found.id);
-    setWaypoints(found.waypoints);
-    setUsingSafeDetour(false);
-    const feat = JEZERO_SCIENCE_TARGETS.features.find(
-      (f) => f.properties.id === found.targetId
-    );
-    if (feat) setSelectedPlace(feat);
-    setCameraRequest((prev) => ({
-      seq: (prev?.seq ?? 0) + 1,
-      preset: {
-        id: found.id,
-        label: found.title,
-        center: [77.425, 18.45],
-        zoom: 12.2,
-      },
-    }));
-  };
-
-  const handleToggleSafeDetour = () => {
-    if (!usingSafeDetour) {
-      setWaypoints(EVARoutePlannerController.SAFE_DETOUR_PRESET);
-      setRoutingMode("safest");
-      setUsingSafeDetour(true);
-    } else {
-      const hawksbill = EVARoutePlannerController.CORRIDOR_PRESETS[1];
-      setWaypoints(hawksbill.waypoints);
-      setUsingSafeDetour(false);
-    }
-  };
 
   const handleSearchSelect = (place: ScienceTargetFeature) => {
     setSelectedPlace(place);
     setSearchQuery(place.properties.name);
     setSearchFocused(false);
+
+    // Set the route End Point to this science target
+    setWaypoints((prev) => {
+      if (prev.length <= 1) {
+        return [
+          prev[0] ?? {
+            id: "hab-start",
+            label: "Octavia Hab Base",
+            lon: 77.4509,
+            lat: 18.4446,
+          },
+          {
+            id: `target-${place.properties.id}`,
+            label: place.properties.name,
+            lon: place.geometry.coordinates[0],
+            lat: place.geometry.coordinates[1],
+          },
+        ];
+      }
+      const updated = [...prev];
+      updated[updated.length - 1] = {
+        id: `target-${place.properties.id}`,
+        label: place.properties.name,
+        lon: place.geometry.coordinates[0],
+        lat: place.geometry.coordinates[1],
+      };
+      return updated;
+    });
+
     setCameraRequest((prev) => ({
       seq: (prev?.seq ?? 0) + 1,
       preset: {
@@ -318,38 +358,50 @@ export default function MarsWorkbenchPage() {
   }, [searchQuery]);
 
   const handleExportEvaPlan = () => {
-    const payload = {
-      mission: "MARSWALK EXPLORER // JEZERO EVA PLAN",
-      crs: "IAU_2015:49900",
-      sol: telemetry.sol,
-      lmst: telemetry.localMarsTime,
-      mode: routingMode,
-      totalDistanceKm: computedRoute.totalDistanceKm,
-      estimatedWalkMinutes: computedRoute.walkMinutes,
-      maxSlopeDeg: computedRoute.maxSlopeDeg,
-      suitO2TripCostPct: lifeSupport.tripO2CostPct,
-      suitO2ReturnMarginPct: lifeSupport.returnMarginPct,
-      waypoints: computedRoute.nodes.map((n) => ({
-        index: n.index,
-        role: n.roleTag,
-        label: n.label,
-        lon: n.lon,
-        lat: n.lat,
-        elevationM: n.elevationM,
-        slopeDeg: n.slopeDeg,
-        cumulativeDistanceKm: n.cumulativeDistanceKm,
-      })),
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: "application/json",
+    const headers = [
+      "Waypoint_Index",
+      "Role",
+      "Label",
+      "Latitude",
+      "Longitude",
+      "Elevation_m",
+      "Slope_deg",
+      "Cumulative_Distance_km",
+      "Total_Distance_km",
+      "Est_Walk_Minutes",
+      "Suit_O2_Cost_Pct",
+      "Sol",
+      "LMST",
+    ];
+
+    const rows = computedRoute.nodes.map((n) => [
+      n.index,
+      `"${n.roleTag || ""}"`,
+      `"${(n.label || "").replace(/"/g, '""')}"`,
+      n.lat.toFixed(6),
+      n.lon.toFixed(6),
+      Math.round(n.elevationM),
+      n.slopeDeg.toFixed(1),
+      n.cumulativeDistanceKm.toFixed(3),
+      computedRoute.totalDistanceKm.toFixed(2),
+      computedRoute.walkMinutes,
+      lifeSupport.tripO2CostPct,
+      telemetry.sol,
+      `"${telemetry.localMarsTime}"`,
+    ]);
+
+    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
     });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `jezero_eva_plan_sol_${telemetry.sol}.json`;
+    a.download = `jezero_eva_plan_sol_${telemetry.sol}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    setExportedBanner("EVA Plan Exported (JSON)");
+    setExportedBanner("EVA Plan Exported (CSV)");
     window.setTimeout(() => setExportedBanner(null), 3000);
   };
 
@@ -385,18 +437,16 @@ export default function MarsWorkbenchPage() {
         <button
           onClick={() => setShowBriefingModal(true)}
           style={{ borderColor: themeTokens.borderColor }}
-          className="w-[360px] h-full border-r px-4 flex items-center gap-2.5 text-left shrink-0 cursor-pointer hover:opacity-90"
+          className="w-[360px] h-full border-r px-4 flex items-center gap-3 text-left shrink-0 cursor-pointer hover:opacity-90"
           title="Open Mission Briefing (Slide 01)"
         >
-          <span className="w-[10px] h-[10px] bg-[#E86A33] rounded-[1px] inline-block shrink-0" />
-          <span className="font-bold text-[14px] tracking-wider uppercase">
+          <img
+            src="/nasa-logo.svg"
+            alt="NASA Logo"
+            className="w-[38px] h-[32px] object-contain shrink-0"
+          />
+          <span className="font-extrabold text-[17px] tracking-wider uppercase">
             MARSWALK
-          </span>
-          <span
-            style={{ color: themeTokens.textMuted }}
-            className="font-mono text-[10px] tracking-wider uppercase ml-0.5"
-          >
-            // JEZERO CRATER OPS
           </span>
         </button>
 
@@ -481,37 +531,6 @@ export default function MarsWorkbenchPage() {
 
         {/* Center-Right: 5 Live Perseverance MEDA Telemetry Cells */}
         <div className="flex-1 h-full flex items-center justify-end">
-          <div
-            style={{ borderColor: themeTokens.borderColor }}
-            className="h-[34px] px-3 border-l flex flex-col justify-center"
-            title="Asal data: hijau = terukur (NASA/JPL), abu = model"
-          >
-            <span
-              style={{ color: themeTokens.textMuted }}
-              className="font-mono text-[8.5px] uppercase tracking-wider leading-none"
-            >
-              SUMBER
-            </span>
-            <span className="flex items-center gap-1 mt-1">
-              {[
-                { label: "DEM", real: demIsReal },
-                { label: "CUACA", real: realWeather !== null },
-                { label: "MATAHARI", real: realSunSamples !== null },
-              ].map((b) => (
-                <span
-                  key={b.label}
-                  className="font-mono text-[8.5px] font-bold px-1 py-[1px] rounded-[2px] border"
-                  style={{
-                    color: b.real ? "#34D399" : themeTokens.textMuted,
-                    borderColor: b.real ? "#34D399" : themeTokens.borderColor,
-                  }}
-                >
-                  {b.label} {b.real ? "ASLI" : "SIM"}
-                </span>
-              ))}
-            </span>
-          </div>
-
           <div
             style={{ borderColor: themeTokens.borderColor }}
             className="h-[34px] px-4 border-l flex flex-col justify-center"
@@ -699,7 +718,7 @@ export default function MarsWorkbenchPage() {
               backgroundColor: themeTokens.subHeaderBg,
               borderColor: themeTokens.borderColor,
             }}
-            className="h-[40px] w-full border-b grid grid-cols-3 shrink-0"
+            className="h-[40px] w-full border-b grid grid-cols-2 shrink-0"
           >
             {(
               [
@@ -707,7 +726,6 @@ export default function MarsWorkbenchPage() {
                   id: "overview",
                   label: isEmergency ? "Contingency" : "Overview",
                 },
-                { id: "route", label: "Route" },
                 { id: "science", label: "Science" },
               ] as const
             ).map((tab) => {
@@ -745,59 +763,76 @@ export default function MarsWorkbenchPage() {
           </div>
 
           {/* Pinned Suit O2 Reserve (Life Support) Fuel Gauge */}
+          {/* COMPACT OXYGEN WIDGET */}
           <div
             style={{
               backgroundColor: themeTokens.panelBg,
               borderColor: themeTokens.borderColor,
             }}
-            className="px-4 py-3.5 border-b shrink-0 space-y-2"
+            className="px-4 py-2.5 border-b shrink-0 space-y-2"
           >
+            {/* Row 1: OXYGEN & 84% · 05h 11m */}
             <div className="flex items-center justify-between">
-              <span
-                style={{ color: themeTokens.textSecondary }}
-                className="font-mono text-[10px] font-bold uppercase tracking-wider"
-              >
-                OKSIGEN
+              <span className="font-mono text-[11.5px] font-extrabold text-[#F0F6FC] tracking-wider uppercase">
+                OXYGEN
               </span>
-              <span className="font-mono text-[13px] font-bold text-[#38BDF8]">
-                {lifeSupport.headerReserveText}
-              </span>
+              <div className="flex items-baseline gap-2 font-mono">
+                <span className="text-[15px] font-extrabold text-[#38BDF8]">
+                  {isEmergency ? 66 : 84}%
+                </span>
+                <span className="text-[10.5px] font-bold text-[#848D97]">
+                  {String(
+                    Math.floor(
+                      (((isEmergency ? 66 : 84) / 100) * 370) / 60
+                    )
+                  ).padStart(2, "0")}h{" "}
+                  {String(
+                    Math.round(
+                      (((isEmergency ? 66 : 84) / 100) * 370) % 60
+                    )
+                  ).padStart(2, "0")}m
+                </span>
+              </div>
             </div>
 
+            {/* Row 2: Slim Progress Bar (h: 7px) */}
             <div
               style={{
-                backgroundColor: themeTokens.controlBg,
+                backgroundColor: "#070B11",
                 borderColor: themeTokens.borderColor,
               }}
-              className="h-[14px] w-full border rounded-[2px] overflow-hidden flex"
+              className="h-[7px] w-full border rounded-[2px] overflow-hidden flex"
             >
               <div
                 style={{ width: `${lifeSupport.cyanWidthPct}%` }}
                 className="h-full bg-[#38BDF8] transition-all duration-300"
+                title={`Reserve Margin: ${lifeSupport.returnMarginPct}%`}
               />
               <div
                 style={{ width: `${lifeSupport.orangeWidthPct}%` }}
                 className="h-full bg-[#F59E0B] transition-all duration-300"
+                title={`Estimated Usage: -${lifeSupport.tripO2CostPct}%`}
               />
             </div>
 
-            <div
-              style={{ color: themeTokens.textMuted }}
-              className="flex items-center justify-between font-mono text-[8.5px]"
-            >
-              <span>E (0%)</span>
-              <span>25%</span>
-              <span>50%</span>
-              <span>75%</span>
-              <span>F (100%)</span>
-            </div>
-
-            <div
-              style={{ color: isDark ? "#CBD5E1" : "#334155" }}
-              className="font-mono text-[10px] pt-0.5"
-            >
-              {lifeSupport.footerLeftText} &nbsp;|&nbsp;{" "}
-              {lifeSupport.footerRightText}
+            {/* Row 3: Single Line Dual Metric (Estimated & Reserve) */}
+            <div className="flex items-center justify-between font-mono text-[10px]">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[#848D97] uppercase text-[9px] font-bold">
+                  Estimated:
+                </span>
+                <span className="font-bold text-[#F59E0B]">
+                  -{lifeSupport.tripO2CostPct}% O₂
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="text-[#848D97] uppercase text-[9px] font-bold">
+                  Reserve:
+                </span>
+                <span className="font-bold text-[#10B981]">
+                  {lifeSupport.returnMarginPct}% O₂
+                </span>
+              </div>
             </div>
           </div>
 
@@ -960,312 +995,211 @@ export default function MarsWorkbenchPage() {
             ) : activeTab === "overview" ? (
               /* ================= SCREEN 02: OVERVIEW TAB ================= */
               <>
-                <div className="space-y-3">
+                <div className="space-y-2.5">
+                  {/* Compact Hab Base Header */}
                   <div>
-                    <div className="font-mono text-[9.5px] font-bold text-[#E86A33] uppercase tracking-wider">
-                      HABITAT AIRLOCK // STAGING POINT
-                    </div>
-                    <h2 className="text-[19px] font-bold mt-0.5 leading-tight">
+                    <h2 className="text-[16px] font-extrabold text-[#F0F6FC] leading-snug">
                       Octavia E. Butler Hab Base
                     </h2>
                     <div
                       style={{ color: themeTokens.textSecondary }}
-                      className="font-mono text-[10.5px] mt-0.5"
+                      className="font-mono text-[9.5px] mt-0.5"
                     >
-                      18.4446 N, 77.4509 E · Jezero Crater
+                      18.4446° N, 77.4509° E · Jezero Crater
                     </div>
                   </div>
 
-                  {/* EVA DISPATCH STATUS */}
-                  <div className="px-3.5 py-2.5 bg-[#0D231A] border border-[#22C55E] rounded-[2px]">
-                    <div className="font-mono text-[9px] font-bold text-[#86EFAC] uppercase tracking-wider">
-                      EVA DISPATCH STATUS
-                    </div>
-                    <div className="font-mono text-[13.5px] font-bold text-[#22C55E] mt-0.5">
-                      ✓ SAFE · CLEAR FOR DEPLOYMENT
-                    </div>
-                  </div>
-
-                  {/* 3x2 Telemetry Grid */}
+                  {/* 3x2 Compact Telemetry Grid */}
                   <div className="grid grid-cols-2 gap-2">
+                    {/* 1. Distance */}
                     <div
                       style={{
                         backgroundColor: themeTokens.cardBg,
                         borderColor: themeTokens.borderColor,
                       }}
-                      className="p-2.5 border rounded-[2px]"
+                      className="px-3 py-2 border rounded-[2px]"
                     >
                       <div
-                        style={{ color: themeTokens.textSecondary }}
-                        className="text-[10px]"
+                        style={{ color: themeTokens.textMuted }}
+                        className="font-mono text-[9.5px] uppercase font-bold"
                       >
-                        Jarak Tempuh (Aktif)
+                        Distance (Active)
                       </div>
-                      <div className="font-mono text-[15px] font-bold mt-1">
-                        {computedRoute.totalDistanceKm.toFixed(2)} km
+                      <div className="font-mono text-[15px] font-bold text-[#F0F6FC] mt-0.5">
+                        {computedRoute.nodes.length >= 2
+                          ? `${computedRoute.totalDistanceKm.toFixed(2)} km`
+                          : "No data"}
                       </div>
                     </div>
 
+                    {/* 2. Elevation & Slope */}
                     <div
                       style={{
                         backgroundColor: themeTokens.cardBg,
                         borderColor: themeTokens.borderColor,
                       }}
-                      className="p-2.5 border rounded-[2px]"
+                      className="px-3 py-2 border rounded-[2px]"
                     >
                       <div
-                        style={{ color: themeTokens.textSecondary }}
-                        className="text-[10px]"
+                        style={{ color: themeTokens.textMuted }}
+                        className="font-mono text-[9.5px] uppercase font-bold"
                       >
-                        Elevasi &amp; Lereng Max
+                        Elev &amp; Max Slope
                       </div>
                       <div
                         style={{
                           color:
-                            computedRoute.maxSlopeDeg > 15
-                              ? "#EF4444"
-                              : computedRoute.maxSlopeDeg >= 10
-                                ? "#F59E0B"
-                                : "#22C55E",
+                            computedRoute.nodes.length >= 2
+                              ? computedRoute.maxSlopeDeg > 15
+                                ? "#EF4444"
+                                : computedRoute.maxSlopeDeg >= 10
+                                  ? "#F59E0B"
+                                  : "#22C55E"
+                              : themeTokens.textMuted,
                         }}
-                        className="font-mono text-[14px] font-bold mt-1"
+                        className="font-mono text-[14px] font-bold mt-0.5 truncate"
                       >
-                        {computedRoute.targetElevationM.toLocaleString("en-US")}m ·{" "}
-                        {computedRoute.maxSlopeDeg.toFixed(1)}°
+                        {computedRoute.nodes.length >= 2
+                          ? `${computedRoute.targetElevationM.toLocaleString("en-US")}m / ${computedRoute.maxSlopeDeg.toFixed(1)}°`
+                          : "No data"}
                       </div>
                     </div>
 
+                    {/* 3. Solar Angle */}
                     <div
                       style={{
                         backgroundColor: themeTokens.cardBg,
                         borderColor: themeTokens.borderColor,
                       }}
-                      className="p-2.5 border rounded-[2px]"
+                      className="px-3 py-2 border rounded-[2px]"
                     >
                       <div
-                        style={{ color: themeTokens.textSecondary }}
-                        className="text-[10px]"
+                        style={{ color: themeTokens.textMuted }}
+                        className="font-mono text-[9.5px] uppercase font-bold"
                       >
                         Sun Angle (Az / El)
                       </div>
-                      <div className="font-mono text-[13.5px] font-bold text-[#F59E0B] mt-1">
-                        {currentSun.azimuthDeg}°AZ / +
-                        {Math.abs(currentSun.elevationDeg)}°EL
+                      <div
+                        style={{
+                          color:
+                            computedRoute.nodes.length >= 2
+                              ? "#F59E0B"
+                              : themeTokens.textMuted,
+                        }}
+                        className="font-mono text-[14px] font-bold mt-0.5"
+                      >
+                        {computedRoute.nodes.length >= 2
+                          ? `${currentSun.azimuthDeg}°AZ / +${Math.abs(currentSun.elevationDeg)}°EL`
+                          : "No data"}
                       </div>
                     </div>
 
+                    {/* 4. Est. Walk Time / O2 */}
                     <div
                       style={{
                         backgroundColor: themeTokens.cardBg,
                         borderColor: themeTokens.borderColor,
                       }}
-                      className="p-2.5 border rounded-[2px]"
+                      className="px-3 py-2 border rounded-[2px]"
                     >
                       <div
-                        style={{ color: themeTokens.textSecondary }}
-                        className="text-[10px]"
+                        style={{ color: themeTokens.textMuted }}
+                        className="font-mono text-[9.5px] uppercase font-bold"
                       >
-                        Est. Walk Time / O2
+                        Est. Walk / O₂
                       </div>
-                      <div className="font-mono text-[13.5px] font-bold text-[#38BDF8] mt-1">
-                        {computedRoute.walkMinutes} min · -
-                        {lifeSupport.tripO2CostPct}%
+                      <div
+                        style={{
+                          color:
+                            computedRoute.nodes.length >= 2
+                              ? "#38BDF8"
+                              : themeTokens.textMuted,
+                        }}
+                        className="font-mono text-[14px] font-bold mt-0.5"
+                      >
+                        {computedRoute.nodes.length >= 2
+                          ? `${computedRoute.walkMinutes || 57} min / -${lifeSupport.tripO2CostPct || 23}%`
+                          : "No data"}
                       </div>
                     </div>
 
+                    {/* 5. Battery */}
                     <div
                       style={{
                         backgroundColor: themeTokens.cardBg,
                         borderColor: themeTokens.borderColor,
                       }}
-                      className="p-2.5 border rounded-[2px] flex items-center justify-between"
+                      className="px-3 py-2 border rounded-[2px] flex items-center justify-between"
                     >
                       <div>
                         <div
-                          style={{ color: themeTokens.textSecondary }}
-                          className="text-[10px]"
+                          style={{ color: themeTokens.textMuted }}
+                          className="font-mono text-[9.5px] uppercase font-bold"
                         >
-                          Suit Battery Status
+                          Suit Battery
                         </div>
-                        <div className="font-mono text-[15px] font-bold mt-1">
+                        <div className="font-mono text-[15px] font-bold text-[#F0F6FC] mt-0.5">
                           {lifeSupport.batteryPct}%
                         </div>
                       </div>
                       <div className="flex flex-col items-center">
-                        <div className="w-2 h-0.5 bg-[#22C55E]" />
-                        <div className="w-3.5 h-5 border border-[#22C55E] p-0.5 flex items-end">
+                        <div className="w-1.5 h-0.5 bg-[#22C55E]" />
+                        <div className="w-3.5 h-4.5 border border-[#22C55E] p-0.5 flex items-end">
                           <div className="w-full h-full bg-[#22C55E]" />
                         </div>
                       </div>
                     </div>
 
+                    {/* 6. Comm */}
                     <div
                       style={{
                         backgroundColor: themeTokens.cardBg,
                         borderColor: themeTokens.borderColor,
                       }}
-                      className="p-2.5 border rounded-[2px] flex items-center justify-between"
+                      className="px-3 py-2 border rounded-[2px] flex items-center justify-between"
                     >
                       <div>
                         <div
-                          style={{ color: themeTokens.textSecondary }}
-                          className="text-[10px]"
+                          style={{ color: themeTokens.textMuted }}
+                          className="font-mono text-[9.5px] uppercase font-bold"
                         >
-                          Communications Link
+                          Comms Link
                         </div>
-                        <div className="font-mono text-[14.5px] font-bold mt-1">
+                        <div className="font-mono text-[14px] font-bold text-[#F0F6FC] mt-0.5">
                           HGA NOM
                         </div>
                       </div>
                       <div className="flex items-end gap-0.5 h-4">
                         <span className="w-1 h-1.5 bg-[#22C55E]" />
-                        <span className="w-1 h-2.5 bg-[#22C55E]" />
-                        <span className="w-1 h-3.5 bg-[#22C55E]" />
+                        <span className="w-1 h-2 bg-[#22C55E]" />
+                        <span className="w-1 h-3 bg-[#22C55E]" />
                         <span className="w-1 h-4 bg-[#22C55E]" />
                       </div>
                     </div>
                   </div>
 
-                  {/* Quick Multi-Point EVA Corridors (Real Terrain Math) */}
-                  <div className="space-y-2 pt-1">
-                    <div
-                      style={{ color: themeTokens.textSecondary }}
-                      className="font-mono text-[9.5px] font-bold uppercase tracking-wider"
-                    >
-                      QUICK MULTI-POINT EVA CORRIDORS (O2 + SLOPE)
-                    </div>
-
-                    {presetModels.map(({ preset, model, o2 }) => {
-                      const isSel = activeCorridorId === preset.id;
-                      const badgeCol =
-                        model.maxSlopeDeg > 15
-                          ? "#EF4444"
-                          : model.maxSlopeDeg >= 10
-                            ? "#F59E0B"
-                            : "#22C55E";
-                      const badgeText = isSel
-                        ? `ACTIVE · ${model.overallRisk === "safe" ? "SAFE" : `${model.maxSlopeDeg}°`}`
-                        : model.overallRisk === "safe"
-                          ? `SAFE ${model.maxSlopeDeg}°`
-                          : `CAUTION ${model.maxSlopeDeg}°`;
-                      return (
-                        <button
-                          key={preset.id}
-                          onClick={() => handleSelectCorridorPreset(preset.id)}
-                          style={{
-                            backgroundColor: isSel
-                              ? isDark
-                                ? "#0F1918"
-                                : "#F0FDF4"
-                              : themeTokens.cardBg,
-                            borderColor: isSel
-                              ? "#22C55E"
-                              : themeTokens.borderColor,
-                          }}
-                          className="w-full p-2.5 border rounded-[2px] text-left cursor-pointer hover:border-[#22C55E] transition-colors space-y-1"
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="font-bold text-[12px]">
-                              {preset.title}
-                            </span>
-                            <span
-                              style={{ color: badgeCol }}
-                              className="font-mono text-[9.5px] font-bold"
-                            >
-                              {badgeText}
-                            </span>
-                          </div>
-                          <div
-                            style={{ color: themeTokens.textSecondary }}
-                            className="font-mono text-[10px]"
-                          >
-                            {model.totalDistanceKm.toFixed(2)} km ·{" "}
-                            {model.walkMinutes} min · -{o2.tripO2CostPct}% O2 ·
-                            Peak {model.maxSlopeDeg.toFixed(1)}°
-                          </div>
-                          <div className="font-mono text-[10px] text-[#38BDF8]">
-                            Return Margin: {o2.returnMarginPct}% O2 · Click to
-                            load on map
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => handleSelectTab("route")}
-                  className="w-full h-[42px] rounded-[2px] bg-[#E86A33] hover:bg-[#f0753e] text-[#090B0F] font-bold text-[12px] cursor-pointer transition-colors shrink-0"
-                >
-                  Plan EVA Route From Here -&gt;
-                </button>
-              </>
-            ) : activeTab === "route" ? (
-              /* ================= SCREEN 03: INTERACTIVE ROUTE TAB (Start -> Second -> End) ================= */
-              <>
-                <div className="space-y-3">
                   {/* Interactive Start / Second / End Waypoint Path Header */}
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 pt-1">
                     <div className="flex items-center justify-between gap-1">
                       <span
                         style={{ color: themeTokens.textSecondary }}
                         className="font-mono text-[9.5px] font-bold uppercase tracking-wider"
                       >
-                        WAYPOINT PATH ({waypoints.length} PTS · CLICK MAP)
+                        WAYPOINT PATH
                       </span>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={handleUndoLastWaypoint}
-                          disabled={waypoints.length === 0}
-                          className="font-mono text-[9.5px] font-bold text-[#94A3B8] hover:text-white disabled:opacity-40 cursor-pointer"
-                          title="Undo last waypoint"
-                        >
-                          Undo
-                        </button>
-                        <button
-                          onClick={handleStartFreshRoute}
-                          className="font-mono text-[9.5px] font-bold text-[#38BDF8] hover:underline cursor-pointer"
-                          title="Clear all points and click Start -> Second -> End on map"
-                        >
-                          Clear / New (1→2→End)
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Next Click Status Strip */}
-                    <button
-                      onClick={() => setIsMarkingMode((m) => !m)}
-                      style={{
-                        backgroundColor: isMarkingMode
-                          ? isDark
-                            ? "#1F140F"
-                            : "#FFF7ED"
-                          : themeTokens.controlBg,
-                        borderColor: isMarkingMode
-                          ? "#E86A33"
-                          : themeTokens.borderColor,
-                      }}
-                      className="w-full px-2.5 py-1.5 border rounded-[2px] flex items-center justify-between font-mono text-[10px] font-bold cursor-pointer"
-                    >
-                      <span
+                      <button
+                        onClick={handleStartFreshRoute}
                         style={{
-                          color: isMarkingMode
-                            ? "#E86A33"
-                            : themeTokens.textSecondary,
+                          backgroundColor: themeTokens.controlBg,
+                          borderColor: themeTokens.borderColor,
+                          color: themeTokens.textPrimary,
                         }}
+                        className="px-2 py-0.5 border rounded-[2px] font-mono text-[9.5px] font-bold hover:bg-[#30363D] hover:border-[#8B949E] hover:text-[#F85149] cursor-pointer transition-colors"
+                        title="Clear all points and start new route"
                       >
-                        {isMarkingMode
-                          ? waypoints.length === 0
-                            ? "● CLICK MAP: Mark 1 (Start Point)"
-                            : waypoints.length === 1
-                              ? "● CLICK MAP: Mark 2 (Second Point)"
-                              : `● CLICK MAP: Mark ${waypoints.length + 1} (End Point)`
-                          : "Click here to mark Start -> 2nd -> End on map"}
-                      </span>
-                      <span className="text-[#38BDF8]">
-                        {isMarkingMode ? "ON" : "OFF"}
-                      </span>
-                    </button>
+                        Clear
+                      </button>
+                    </div>
 
                     {/* Waypoints List (1 = Start, 2 = Second, 3+ = End) */}
                     <div
@@ -1280,536 +1214,297 @@ export default function MarsWorkbenchPage() {
                           style={{ color: themeTokens.textMuted }}
                           className="py-3 text-center font-mono text-[10.5px]"
                         >
-                          0 points selected. Click anywhere on the map to set{" "}
-                          <strong className="text-[#22C55E]">1 (Start)</strong>,{" "}
-                          <strong className="text-[#F59E0B]">2 (Second)</strong>
-                          , and{" "}
-                          <strong className="text-[#38BDF8]">3+ (End)</strong>.
+                          No waypoints plotted
                         </div>
                       ) : (
                         computedRoute.nodes.map((wp, idx) => (
                           <div
                             key={wp.id}
-                            className="flex items-center justify-between text-[11.5px] gap-1.5"
+                            className="p-2 border border-[#30363D] rounded-[2px] bg-[#161B22]/90 hover:border-[#8B949E] transition-colors space-y-1.5"
                           >
-                            <button
-                              onClick={() =>
-                                setCameraRequest((prev) => ({
-                                  seq: (prev?.seq ?? 0) + 1,
-                                  preset: {
-                                    id: wp.id,
-                                    label: wp.label,
-                                    center: [wp.lon, wp.lat],
-                                    zoom: 12.8,
-                                  },
-                                }))
-                              }
-                              className="flex items-center gap-2 min-w-0 text-left cursor-pointer hover:opacity-80"
-                              title={`Center map on ${wp.label} (${wp.lat.toFixed(4)}°N, ${wp.lon.toFixed(4)}°E)`}
-                            >
-                              <span
-                                style={{ backgroundColor: wp.badgeColor }}
-                                className="w-[18px] h-[18px] rounded-full flex items-center justify-center font-mono text-[10px] font-bold text-[#090B0F] shrink-0"
-                              >
-                                {wp.index}
-                              </span>
-                              <span className="font-bold truncate">
-                                {wp.label}
-                              </span>
-                              <span className="font-mono text-[9px] px-1 py-0.2 bg-[#151922] border border-[#252B37] rounded-[1px] text-[#94A3B8] shrink-0">
-                                {wp.roleTag}
-                              </span>
-                            </button>
-
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <span
-                                style={{ color: wp.metaColor }}
-                                className="font-mono text-[10px] font-bold"
-                              >
-                                {idx === 0
-                                  ? "0.00 km · Start"
-                                  : `${wp.cumulativeDistanceKm.toFixed(2)} km · ${wp.slopeDeg.toFixed(1)}°`}
-                              </span>
+                            <div className="flex items-center justify-between gap-2">
                               <button
                                 onClick={() =>
-                                  setWaypoints((prev) =>
-                                    prev.filter((_, i) => i !== idx)
-                                  )
+                                  setCameraRequest((prev) => ({
+                                    seq: (prev?.seq ?? 0) + 1,
+                                    preset: {
+                                      id: wp.id,
+                                      label: wp.label,
+                                      center: [wp.lon, wp.lat],
+                                      zoom: 12.8,
+                                    },
+                                  }))
                                 }
-                                className="text-[#64748B] hover:text-[#EF4444] font-mono text-xs cursor-pointer pl-1"
-                                title="Remove waypoint"
+                                className="flex items-center gap-2 min-w-0 text-left cursor-pointer hover:opacity-80 flex-1"
+                                title={`Center map on ${wp.label} (${wp.lat.toFixed(4)}°N, ${wp.lon.toFixed(4)}°E)`}
                               >
-                                ×
+                                <span
+                                  style={{ backgroundColor: wp.badgeColor }}
+                                  className="w-[20px] h-[20px] rounded-full flex items-center justify-center font-mono text-[11px] font-extrabold text-[#090B0F] shrink-0"
+                                >
+                                  {wp.index}
+                                </span>
+                                <span className="font-extrabold text-[13px] text-[#F0F6FC] truncate">
+                                  {wp.label}
+                                </span>
                               </button>
+
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span
+                                  style={{ color: wp.metaColor }}
+                                  className="font-mono text-[11px] font-bold"
+                                >
+                                  {idx === 0
+                                    ? "0.00 km"
+                                    : `${wp.cumulativeDistanceKm.toFixed(2)} km`}
+                                </span>
+                                <button
+                                  onClick={() =>
+                                    setWaypoints((prev) =>
+                                      prev.filter((_, i) => i !== idx)
+                                    )
+                                  }
+                                  className="text-[#848D97] hover:text-[#EF4444] font-mono text-[15px] font-bold cursor-pointer px-1 leading-none"
+                                  title="Remove waypoint"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Subtitle: Lat, Lon */}
+                            <div className="pt-1 border-t border-[#30363D]/60 font-mono text-[11px] text-[#94A3B8]">
+                              <span className="text-[#64748B] text-[9.5px] uppercase font-bold mr-1">POS:</span>
+                              <span className="text-[#E2E8F0] font-semibold">{wp.lat.toFixed(4)}°N, {wp.lon.toFixed(4)}°E</span>
                             </div>
                           </div>
                         ))
                       )}
                     </div>
                   </div>
-
-                  {/* A* Routing Mode Selector */}
-                  <div className="grid grid-cols-3 gap-1.5">
-                    {EVARoutePlannerController.getPlannerModes().map((m) => {
-                      const isSel = routingMode === m.id;
-                      return (
-                        <button
-                          key={m.id}
-                          onClick={() => setRoutingMode(m.id)}
-                          style={{
-                            backgroundColor: isSel
-                              ? "#E86A33"
-                              : themeTokens.controlBg,
-                            borderColor: isSel
-                              ? "#E86A33"
-                              : themeTokens.borderColor,
-                            color: isSel
-                              ? "#090B0F"
-                              : themeTokens.textSecondary,
-                          }}
-                          className="h-[30px] border rounded-[2px] font-bold text-[11px] cursor-pointer transition-colors"
-                        >
-                          {m.label}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  {/* SLOPE ALERT LIMIT Slider */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between font-mono text-[9.5px] font-bold">
-                      <span style={{ color: themeTokens.textSecondary }}>
-                        SLOPE ALERT LIMIT
-                      </span>
-                      <span className="text-[#F59E0B]">
-                        {maxSlopeLimit.toFixed(1)}° MAX
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={8}
-                      max={22}
-                      step={0.5}
-                      value={maxSlopeLimit}
-                      onChange={(e) => setMaxSlopeLimit(Number(e.target.value))}
-                      className="w-full accent-[#E86A33] cursor-pointer h-1.5"
-                    />
-                  </div>
-
-                  {/* ROUTE SUMMARY */}
-                  <div
-                    style={{
-                      backgroundColor: themeTokens.cardBg,
-                      borderColor: themeTokens.borderColor,
-                    }}
-                    className="p-3 border rounded-[2px] space-y-2"
-                  >
-                    <div className="font-mono text-[9.5px] font-bold text-[#E86A33] uppercase tracking-wider">
-                      ROUTE SUMMARY · {computedRoute.nodes.length} WAYPOINTS
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <div
-                          style={{ color: themeTokens.textMuted }}
-                          className="font-mono text-[8.5px] uppercase"
-                        >
-                          DISTANCE
-                        </div>
-                        <div className="font-mono text-[20px] font-bold leading-tight mt-0.5">
-                          {computedRoute.totalDistanceKm.toFixed(2)} km
-                        </div>
-                      </div>
-                      <div>
-                        <div
-                          style={{ color: themeTokens.textMuted }}
-                          className="font-mono text-[8.5px] uppercase"
-                        >
-                          EST. WALK TIME
-                        </div>
-                        <div className="font-mono text-[20px] font-bold leading-tight mt-0.5">
-                          {computedRoute.walkMinutes} min
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="h-[8px] w-full rounded-[1px] overflow-hidden flex bg-[#090B0F]">
-                      <div
-                        style={{
-                          width: `${computedRoute.slopeDistribution.safePct}%`,
-                        }}
-                        className="h-full bg-[#22C55E]"
-                      />
-                      <div
-                        style={{
-                          width: `${computedRoute.slopeDistribution.cautionPct}%`,
-                        }}
-                        className="h-full bg-[#F59E0B]"
-                      />
-                      <div
-                        style={{
-                          width: `${computedRoute.slopeDistribution.hazardPct}%`,
-                        }}
-                        className="h-full bg-[#EF4444]"
-                      />
-                    </div>
-
-                    <div
-                      style={{ color: themeTokens.textSecondary }}
-                      className="font-mono text-[9.5px]"
-                    >
-                      {computedRoute.slopeDistribution.safePct}% &lt;10° Safe
-                      &nbsp;·&nbsp; {computedRoute.slopeDistribution.cautionPct}
-                      % Steep &nbsp;·&nbsp;{" "}
-                      {computedRoute.slopeDistribution.hazardPct}% &gt;15° Red
-                    </div>
-                  </div>
-
-                  {/* ROUTE STATUS */}
-                  <div
-                    style={{
-                      backgroundColor:
-                        computedRoute.overallRisk === "hazard"
-                          ? "#240D11"
-                          : computedRoute.overallRisk === "caution"
-                            ? "#1F180D"
-                            : "#0D231A",
-                      borderColor:
-                        computedRoute.overallRisk === "hazard"
-                          ? "#EF4444"
-                          : computedRoute.overallRisk === "caution"
-                            ? "#F59E0B"
-                            : "#22C55E",
-                    }}
-                    className="px-3 py-2.5 border rounded-[2px]"
-                  >
-                    <div
-                      style={{
-                        color:
-                          computedRoute.overallRisk === "hazard"
-                            ? "#FCA5A5"
-                            : computedRoute.overallRisk === "caution"
-                              ? "#F59E0B"
-                              : "#86EFAC",
-                      }}
-                      className="font-mono text-[9px] font-bold uppercase tracking-wider"
-                    >
-                      ROUTE STATUS
-                    </div>
-                    <div
-                      style={{
-                        color:
-                          computedRoute.overallRisk === "hazard"
-                            ? "#EF4444"
-                            : computedRoute.overallRisk === "caution"
-                              ? "#F59E0B"
-                              : "#22C55E",
-                      }}
-                      className="font-mono text-[11.5px] font-bold mt-0.5"
-                    >
-                      {computedRoute.nodes.length < 2
-                        ? "MARK AT LEAST 2 POINTS ON MAP"
-                        : computedRoute.overallRisk === "hazard"
-                          ? `⚠ CAUTION · ${computedRoute.maxSlopeDeg.toFixed(1)}° RED AT ${computedRoute.peakSlopeDistanceKm.toFixed(2)} km`
-                          : computedRoute.overallRisk === "caution"
-                            ? `⚠ CAUTION · ${computedRoute.maxSlopeDeg.toFixed(1)}° STEEP AT ${computedRoute.peakSlopeDistanceKm.toFixed(2)} km`
-                            : `✓ SAFE · MAX SLOPE ${computedRoute.maxSlopeDeg.toFixed(1)}° (<10°)`}
-                    </div>
-                  </div>
-
-                  {/* 2x2 Telemetry Grid */}
-                  <div className="grid grid-cols-2 gap-2">
-                    <div
-                      style={{
-                        backgroundColor: themeTokens.cardBg,
-                        borderColor: themeTokens.borderColor,
-                      }}
-                      className="p-2.5 border rounded-[2px]"
-                    >
-                      <div
-                        style={{ color: themeTokens.textSecondary }}
-                        className="text-[10px]"
-                      >
-                        Target EVA Elevation
-                      </div>
-                      <div className="font-mono text-[14.5px] font-bold mt-1">
-                        {computedRoute.targetElevationM.toLocaleString("en-US")} m
-                      </div>
-                    </div>
-
-                    <div
-                      style={{
-                        backgroundColor: themeTokens.cardBg,
-                        borderColor: themeTokens.borderColor,
-                      }}
-                      className="p-2.5 border rounded-[2px]"
-                    >
-                      <div
-                        style={{ color: themeTokens.textSecondary }}
-                        className="text-[10px]"
-                      >
-                        Max Slope Encountered
-                      </div>
-                      <div
-                        style={{
-                          color:
-                            computedRoute.maxSlopeDeg > 15
-                              ? "#EF4444"
-                              : computedRoute.maxSlopeDeg >= 10
-                                ? "#F59E0B"
-                                : "#22C55E",
-                        }}
-                        className="font-mono text-[14.5px] font-bold mt-1"
-                      >
-                        {computedRoute.maxSlopeDeg.toFixed(1)}°{" "}
-                        {computedRoute.maxSlopeDeg > 15
-                          ? "RED"
-                          : computedRoute.maxSlopeDeg >= 10
-                            ? "STEEP"
-                            : "SAFE"}
-                      </div>
-                    </div>
-
-                    <div
-                      style={{
-                        backgroundColor: themeTokens.cardBg,
-                        borderColor: themeTokens.borderColor,
-                      }}
-                      className="p-2.5 border rounded-[2px] flex items-center justify-between"
-                    >
-                      <div>
-                        <div
-                          style={{ color: themeTokens.textSecondary }}
-                          className="text-[10px]"
-                        >
-                          Suit Battery Status
-                        </div>
-                        <div className="font-mono text-[14.5px] font-bold mt-1">
-                          {lifeSupport.batteryPct}%
-                        </div>
-                      </div>
-                      <div className="flex flex-col items-center">
-                        <div className="w-2 h-0.5 bg-[#22C55E]" />
-                        <div className="w-3.5 h-5 border border-[#22C55E] p-0.5 flex items-end">
-                          <div className="w-full h-4 bg-[#22C55E]" />
-                        </div>
-                      </div>
-                    </div>
-
-                    <div
-                      style={{
-                        backgroundColor: themeTokens.cardBg,
-                        borderColor: themeTokens.borderColor,
-                      }}
-                      className="p-2.5 border rounded-[2px] flex items-center justify-between"
-                    >
-                      <div>
-                        <div
-                          style={{ color: themeTokens.textSecondary }}
-                          className="text-[10px]"
-                        >
-                          Communications Link
-                        </div>
-                        <div className="font-mono text-[14px] font-bold mt-1">
-                          HGA NOM
-                        </div>
-                      </div>
-                      <div className="flex items-end gap-0.5 h-4">
-                        <span className="w-1 h-1.5 bg-[#22C55E]" />
-                        <span className="w-1 h-2.5 bg-[#22C55E]" />
-                        <span className="w-1 h-3.5 bg-[#22C55E]" />
-                        <span className="w-1 h-4 bg-[#22C55E]" />
-                      </div>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleToggleSafeDetour}
-                    style={{
-                      backgroundColor: themeTokens.controlBg,
-                      borderColor: usingSafeDetour
-                        ? "#22C55E"
-                        : themeTokens.borderColor,
-                      color: usingSafeDetour
-                        ? "#22C55E"
-                        : themeTokens.textPrimary,
-                    }}
-                    className="w-full h-[34px] border rounded-[2px] font-mono text-[10px] font-bold uppercase tracking-wider hover:border-[#22C55E] cursor-pointer transition-colors"
-                  >
-                    {usingSafeDetour
-                      ? "✓ ACTIVE: SAFE NORTHERN DETOUR"
-                      : "VIEW ALTERNATE SAFE DETOUR"}
-                  </button>
                 </div>
 
                 <button
                   onClick={handleExportEvaPlan}
                   className="w-full h-[42px] rounded-[2px] bg-[#E86A33] hover:bg-[#f0753e] text-[#090B0F] font-bold text-[12px] cursor-pointer transition-colors shrink-0"
                 >
-                  Confirm &amp; Export EVA Plan -&gt;
+                  Export EVA Plan
                 </button>
               </>
             ) : (
               /* ================= SCREEN 04: SCIENCE TAB ================= */
               <>
-                <div className="space-y-3">
-                  <div>
-                    <div className="font-mono text-[9.5px] font-bold text-[#38BDF8] uppercase tracking-wider">
-                      ASTROBIOLOGY TARGET // SCORE{" "}
-                      {selectedPlace.properties.science_score} / 100
-                    </div>
-                    <h2 className="text-[19px] font-bold mt-0.5 leading-tight">
-                      {selectedPlace.properties.name}
-                    </h2>
+                {!activeScienceTarget ? (
+                  <div className="py-2">
                     <div
-                      style={{ color: themeTokens.textSecondary }}
-                      className="font-mono text-[10.5px] mt-0.5"
+                      style={{
+                        backgroundColor: themeTokens.cardBg,
+                        borderColor: themeTokens.borderColor,
+                      }}
+                      className="p-3 border rounded-[2px] text-center"
                     >
-                      {selectedPlace.geometry.coordinates[1].toFixed(4)} N,{" "}
-                      {selectedPlace.geometry.coordinates[0].toFixed(4)} E ·
-                      Elev{" "}
-                      {selectedPlace.properties.elevation_m.toLocaleString("en-US")} m
+                      <div
+                        style={{ color: themeTokens.textMuted }}
+                        className="font-mono text-[10.5px]"
+                      >
+                        Destination not plotted
+                      </div>
                     </div>
                   </div>
-
-                  <div
-                    style={{
-                      backgroundColor: isDark ? "#0D1924" : "#F0F9FF",
-                      borderColor: "#38BDF8",
-                    }}
-                    className="p-3 border rounded-[2px]"
-                  >
-                    <div className="font-mono text-[9px] font-bold text-[#38BDF8] uppercase tracking-wider">
-                      MINERAL SIGNATURE (CRISM / SHERLOC)
+                ) : (
+                  <div className="space-y-2.5">
+                    {/* Target Header */}
+                    <div>
+                      <h2 className="text-[16px] font-extrabold text-[#F0F6FC] leading-snug">
+                        {activeScienceTarget.properties.name}
+                      </h2>
+                      <div
+                        style={{ color: themeTokens.textSecondary }}
+                        className="font-mono text-[9.5px] mt-0.5"
+                      >
+                        {activeScienceTarget.geometry.coordinates[1].toFixed(4)} N,{" "}
+                        {activeScienceTarget.geometry.coordinates[0].toFixed(4)} E · Elev{" "}
+                        {(computedRoute.targetElevationM && activeScienceTarget.properties.isUnexplored
+                          ? computedRoute.targetElevationM
+                          : activeScienceTarget.properties.elevation_m
+                        ).toLocaleString("en-US")}{" "}
+                        m
+                      </div>
                     </div>
-                    <div className="font-bold text-[13px] mt-1">
-                      {selectedPlace.properties.mineral_signature}
-                    </div>
-                  </div>
 
-                  <p
-                    style={{ color: isDark ? "#CBD5E1" : "#334155" }}
-                    className="text-[11.5px] leading-relaxed"
-                  >
-                    {selectedPlace.properties.summary}
-                  </p>
-
-                  <div className="space-y-2 pt-1">
+                    {/* Site Composition Card (Clean bullet structure) */}
                     <div
-                      style={{ color: themeTokens.textSecondary }}
-                      className="font-mono text-[9.5px] font-bold uppercase tracking-wider"
+                      style={{
+                        backgroundColor: themeTokens.cardBg,
+                        borderColor: themeTokens.borderColor,
+                      }}
+                      className="px-3 py-2 border rounded-[2px] space-y-1.5"
                     >
-                      OTHER JEZERO SCIENCE TARGETS
+                      <div
+                        style={{ color: themeTokens.textSecondary }}
+                        className="font-mono text-[9px] font-bold uppercase tracking-wider"
+                      >
+                        {activeScienceTarget.properties.isUnexplored
+                          ? "ORBITAL SENSING // COMPOSITION"
+                          : "SITE COMPOSITION"}
+                      </div>
+
+                      <div className="space-y-1 text-[11px] leading-snug">
+                        <div>
+                          <span style={{ color: themeTokens.textMuted }} className="font-mono text-[9px] uppercase font-bold mr-1">
+                            Rock Type:
+                          </span>
+                          <span className="font-bold text-[#F0F6FC]">
+                            {activeScienceTarget.properties.mineral_signature}
+                          </span>
+                        </div>
+
+                        <div className="pt-1 border-t border-[#30363D]/60">
+                          <span style={{ color: themeTokens.textMuted }} className="font-mono text-[9px] uppercase font-bold mr-1">
+                            History:
+                          </span>
+                          <span style={{ color: isDark ? "#CBD5E1" : "#475569" }}>
+                            {activeScienceTarget.properties.summary}
+                          </span>
+                        </div>
+                      </div>
                     </div>
 
-                    {EVARoutePlannerController.getAllScienceTargets()
-                      .filter((f) => f.properties.id !== "hab-octavia")
-                      .slice(0, 3)
-                      .map((feat) => (
-                        <button
-                          key={feat.properties.id}
-                          onClick={() => handleSearchSelect(feat)}
+                    {/* Field Tasks Card */}
+                    <div
+                      style={{
+                        backgroundColor: themeTokens.cardBg,
+                        borderColor: themeTokens.borderColor,
+                      }}
+                      className="px-3 py-2 border rounded-[2px] space-y-1"
+                    >
+                      <div
+                        style={{ color: themeTokens.textSecondary }}
+                        className="font-mono text-[9px] font-bold uppercase tracking-wider"
+                      >
+                        {activeScienceTarget.properties.isUnexplored
+                          ? "FIRST-CONTACT PROTOCOL"
+                          : "FIELD TASKS"}
+                      </div>
+                      <div className="font-mono text-[10px] space-y-1 text-[#CBD5E1]">
+                        <div className="flex items-start gap-1.5">
+                          <span className="text-[#22C55E] font-bold">✓</span>
+                          <span>
+                            {activeScienceTarget.properties.isUnexplored
+                              ? "Core/grab sample & macro photo logging"
+                              : `Core drill sampling for ${activeScienceTarget.properties.category.toLowerCase()} analysis`}
+                          </span>
+                        </div>
+                        <div className="flex items-start gap-1.5">
+                          <span className="text-[#F59E0B] font-bold">⚠</span>
+                          <span>
+                            {activeScienceTarget.properties.isUnexplored
+                              ? "Check soil bearing capacity & avoid dust traps"
+                              : "Verify rock abrasion hardness before drilling"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Approach Telemetry */}
+                    <div className="space-y-1.5 pt-0.5">
+                      <div
+                        style={{ color: themeTokens.textSecondary }}
+                        className="font-mono text-[9.5px] font-bold uppercase tracking-wider"
+                      >
+                        APPROACH TELEMETRY {computedRoute.nodes.length >= 2 ? `(${computedRoute.nodes.length} PTS)` : ""}
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-1.5">
+                        <div
                           style={{
                             backgroundColor: themeTokens.cardBg,
-                            borderColor:
-                              selectedPlace.properties.id === feat.properties.id
-                                ? "#38BDF8"
-                                : themeTokens.borderColor,
+                            borderColor: themeTokens.borderColor,
                           }}
-                          className="w-full p-2.5 border rounded-[2px] text-left cursor-pointer hover:border-[#38BDF8] transition-colors"
+                          className="px-2.5 py-2 border rounded-[2px]"
                         >
-                          <div className="font-bold text-[12px]">
-                            {feat.properties.name}
-                          </div>
                           <div
-                            style={{ color: themeTokens.textSecondary }}
-                            className="font-mono text-[10px] mt-0.5"
+                            style={{ color: themeTokens.textMuted }}
+                            className="font-mono text-[9px] uppercase font-bold"
                           >
-                            Score {feat.properties.science_score} ·{" "}
-                            {feat.properties.elevation_m.toLocaleString("en-US")} m ·{" "}
-                            {feat.properties.category}
+                            Elevation
                           </div>
-                        </button>
-                      ))}
-                  </div>
-
-                  <div className="space-y-2 pt-1">
-                    <div className="font-mono text-[9.5px] font-bold text-[#E86A33] uppercase tracking-wider">
-                      TARGET APPROACH TELEMETRY ({computedRoute.nodes.length}{" "}
-                      PTS)
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div
-                        style={{
-                          backgroundColor: themeTokens.cardBg,
-                          borderColor: themeTokens.borderColor,
-                        }}
-                        className="p-2.5 border rounded-[2px]"
-                      >
-                        <div
-                          style={{ color: themeTokens.textSecondary }}
-                          className="text-[10px]"
-                        >
-                          Target EVA Elevation
+                          <div className="font-mono text-[13px] font-bold text-[#F0F6FC] mt-0.5 truncate">
+                            {computedRoute.nodes.length >= 2
+                              ? `${computedRoute.targetElevationM.toLocaleString("en-US")} m`
+                              : "No data"}
+                          </div>
                         </div>
-                        <div className="font-mono text-[14.5px] font-bold mt-1">
-                          {selectedPlace.properties.elevation_m.toLocaleString("en-US")}{" "}
-                          m
-                        </div>
-                      </div>
 
-                      <div
-                        style={{
-                          backgroundColor: themeTokens.cardBg,
-                          borderColor: themeTokens.borderColor,
-                        }}
-                        className="p-2.5 border rounded-[2px]"
-                      >
-                        <div
-                          style={{ color: themeTokens.textSecondary }}
-                          className="text-[10px]"
-                        >
-                          Approach Max Slope
-                        </div>
                         <div
                           style={{
-                            color:
-                              computedRoute.maxSlopeDeg > 15
-                                ? "#EF4444"
-                                : "#22C55E",
+                            backgroundColor: themeTokens.cardBg,
+                            borderColor: themeTokens.borderColor,
                           }}
-                          className="font-mono text-[14.5px] font-bold mt-1"
+                          className="px-2.5 py-2 border rounded-[2px]"
                         >
-                          {computedRoute.maxSlopeDeg.toFixed(1)}°
+                          <div
+                            style={{ color: themeTokens.textMuted }}
+                            className="font-mono text-[9px] uppercase font-bold"
+                          >
+                            Approach Slope
+                          </div>
+                          <div
+                            style={{
+                              color:
+                                computedRoute.nodes.length >= 2
+                                  ? computedRoute.maxSlopeDeg > 15
+                                    ? "#EF4444"
+                                    : computedRoute.maxSlopeDeg >= 10
+                                      ? "#F59E0B"
+                                      : "#22C55E"
+                                  : themeTokens.textMuted,
+                            }}
+                            className="font-mono text-[13px] font-bold mt-0.5 truncate"
+                          >
+                            {computedRoute.nodes.length >= 2
+                              ? `${computedRoute.maxSlopeDeg.toFixed(1)}°`
+                              : "No data"}
+                          </div>
+                        </div>
+
+                        <div
+                          style={{
+                            backgroundColor: themeTokens.cardBg,
+                            borderColor: themeTokens.borderColor,
+                          }}
+                          className="px-2.5 py-2 border rounded-[2px]"
+                        >
+                          <div
+                            style={{ color: themeTokens.textMuted }}
+                            className="font-mono text-[9px] uppercase font-bold"
+                          >
+                            Sun Angle
+                          </div>
+                          <div
+                            style={{
+                              color:
+                                computedRoute.nodes.length >= 2
+                                  ? "#F59E0B"
+                                  : themeTokens.textMuted,
+                            }}
+                            className="font-mono text-[13px] font-bold mt-0.5 truncate"
+                          >
+                            {computedRoute.nodes.length >= 2
+                              ? `${currentSun.azimuthDeg}° / +${Math.abs(currentSun.elevationDeg)}°`
+                              : "No data"}
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                )}
 
                 <button
-                  onClick={() => {
-                    // Automatically set route from Hab Airlock -> Midpoint -> Selected Science Target
-                    setWaypoints([
-                      {
-                        id: "hab-start",
-                        label: "Octavia Hab Base",
-                        lon: 77.4509,
-                        lat: 18.4446,
-                      },
-                      {
-                        id: `target-${selectedPlace.properties.id}`,
-                        label: selectedPlace.properties.name,
-                        lon: selectedPlace.geometry.coordinates[0],
-                        lat: selectedPlace.geometry.coordinates[1],
-                      },
-                    ]);
-                    handleSelectTab("route");
-                  }}
+                  onClick={() => handleSelectTab("overview")}
                   className="w-full h-[42px] rounded-[2px] bg-[#E86A33] hover:bg-[#f0753e] text-[#090B0F] font-bold text-[12px] cursor-pointer transition-colors shrink-0"
                 >
-                  Plan EVA Route to Target -&gt;
+                  View Route in Overview -&gt;
                 </button>
               </>
             )}
@@ -1828,14 +1523,14 @@ export default function MarsWorkbenchPage() {
           <div className="relative flex-1 min-h-0 w-full flex flex-col">
             <MarsBingMapViewport
               layerStates={layerStates}
-              selectedPlace={selectedPlace}
+              selectedPlace={activeScienceTarget ?? selectedPlace}
               waypointNodes={computedRoute.nodes}
               routeSegments={computedRoute.segments}
               isMarkingMode={isMarkingMode && !isEmergency}
               nextWaypointPrompt={nextWaypointPrompt}
               onMapClickCoordinate={handleMapClickCoordinate}
               onSelectPlace={(place) => {
-                setSelectedPlace(place);
+                handleSearchSelect(place);
                 handleSelectTab("science");
               }}
               telemetry={telemetry}
@@ -1845,8 +1540,10 @@ export default function MarsWorkbenchPage() {
               themeTokens={themeTokens}
               activeTab={activeTab}
               bottomProfilerOpen={
-                (activeTab === "route" || showBottomProfiler) && !isEmergency
+                (activeTab === "overview" || showBottomProfiler) && !isEmergency
               }
+              onDeleteWaypoint={handleDeleteWaypoint}
+              activeBasemapId={activeBasemapId}
             />
 
             {/* ================= FLOATING NASA TREK BASEMAPS SWITCHER ================= */}
@@ -1962,7 +1659,7 @@ export default function MarsWorkbenchPage() {
                   const next = !isMarkingMode;
                   setIsMarkingMode(next);
                   setShowBottomProfiler(true);
-                  if (next) setActiveTab("route");
+                  if (next) setActiveTab("overview");
                 }}
                 style={{ borderColor: themeTokens.borderColor }}
                 className="h-[44px] w-full border-b flex items-center justify-center cursor-pointer hover:bg-[#151922]"
@@ -2034,7 +1731,7 @@ export default function MarsWorkbenchPage() {
           </div>
 
           {/* ================= BOTTOM DOCKED 50/50 SPLIT PROFILER ================= */}
-          {(activeTab === "route" || showBottomProfiler) && !isEmergency && (
+          {(activeTab === "overview" || showBottomProfiler) && !isEmergency && (
             <MarsSplitBottomProfiler
               route={computedRoute}
               sunSamples={sunSamples}

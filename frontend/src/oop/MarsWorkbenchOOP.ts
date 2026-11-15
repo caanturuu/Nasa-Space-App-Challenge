@@ -49,16 +49,16 @@ export class ThemeController {
 
   private static readonly DARK_TOKENS: ThemeTokens = {
     mode: "dark",
-    canvasBg: "#090B0F",
-    subHeaderBg: "#0B0D12",
-    panelBg: "#0E1117",
-    cardBg: "#11151E",
-    controlBg: "#151922",
-    borderColor: "#252B37",
-    textPrimary: "#F8FAFC",
-    textSecondary: "#94A3B8",
-    textMuted: "#64748B",
-    chartGrid: "#1B202B",
+    canvasBg: "#010409",
+    subHeaderBg: "#161B22",
+    panelBg: "#0D1117",
+    cardBg: "#161B22",
+    controlBg: "#21262D",
+    borderColor: "#30363D",
+    textPrimary: "#E6EDF3",
+    textSecondary: "#848D97",
+    textMuted: "#656C76",
+    chartGrid: "#21262D",
   };
 
   private static readonly LIGHT_TOKENS: ThemeTokens = {
@@ -158,10 +158,9 @@ export class MroCtxOrthoBasemap extends BasemapLayerDescriptor {
   public override toOpenLayersState() {
     return {
       mola_clrshade: { visible: false, opacity: 1.0 },
-      // Keep Viking underneath at full opacity so CTX blends with authentic rusty Mars hue
-      viking_mdim21: { visible: true, opacity: 1.0 },
-      ctx_global_5m: { visible: true, opacity: 0.55 },
-      jezero_trek_ctx_6m: { visible: true, opacity: 0.65 },
+      viking_mdim21: { visible: false, opacity: 1.0 },
+      ctx_global_5m: { visible: false, opacity: 1.0 },
+      jezero_trek_ctx_6m: { visible: true, opacity: 1.0 },
       jezero_slope_overlay: { visible: false, opacity: 0.35 },
       science_targets: { visible: true, opacity: 1.0 },
       hazard_zones: { visible: true, opacity: 0.9 },
@@ -197,7 +196,7 @@ export class BasemapRegistry {
   private readonly layers: Map<BasemapId, BasemapLayerDescriptor>;
   private activeId: BasemapId;
 
-  constructor(initialId: BasemapId = "jezero_ctx_6m") {
+  constructor(initialId: BasemapId = "viking_mdim21") {
     this.layers = new Map<BasemapId, BasemapLayerDescriptor>([
       ["mola_clrshade", new MolaShadedReliefBasemap()],
       ["jezero_ctx_6m", new MroCtxOrthoBasemap()],
@@ -211,7 +210,7 @@ export class BasemapRegistry {
   }
 
   public getActiveBasemap(): BasemapLayerDescriptor {
-    return this.layers.get(this.activeId) ?? this.layers.get("jezero_ctx_6m")!;
+    return this.layers.get(this.activeId) ?? this.layers.get("viking_mdim21")!;
   }
 
   public static getLayerCount(): number {
@@ -504,6 +503,41 @@ export class EVARoutePlannerController {
         { id: "wp-5", label: "Belva Crater Rim", lon: 77.392, lat: 18.472 },
       ],
     },
+    {
+      id: "corridor-seitah",
+      title: "Hab -> Séítah Ridge (4 pts)",
+      targetId: "seitah-north",
+      waypoints: [
+        { id: "wp-1", label: "Octavia Hab Base", lon: 77.4509, lat: 18.4446 },
+        { id: "wp-2", label: "South Máaz Basin", lon: 77.443, lat: 18.4405 },
+        { id: "wp-3", label: "Séítah East Bench", lon: 77.437, lat: 18.4395 },
+        { id: "wp-4", label: "Séítah Olivine Ridge", lon: 77.434, lat: 18.4385 },
+      ],
+    },
+    {
+      id: "corridor-carbonate",
+      title: "Hab -> Margin Carbonates (5 pts)",
+      targetId: "margin-carbonate",
+      waypoints: [
+        { id: "wp-1", label: "Octavia Hab Base", lon: 77.4509, lat: 18.4446 },
+        { id: "wp-2", label: "North Flat Turn", lon: 77.4375, lat: 18.454 },
+        { id: "wp-3", label: "Delta North Bypass", lon: 77.418, lat: 18.47 },
+        { id: "wp-4", label: "Carbonate Terrace", lon: 77.399, lat: 18.4795 },
+        { id: "wp-5", label: "Margin Carbonate Unit", lon: 77.386, lat: 18.486 },
+      ],
+    },
+    {
+      id: "corridor-neretva",
+      title: "Hab -> Neretva Vallis (5 pts)",
+      targetId: "neretva-channel",
+      waypoints: [
+        { id: "wp-1", label: "Octavia Hab Base", lon: 77.4509, lat: 18.4446 },
+        { id: "wp-2", label: "North Ridge Pass", lon: 77.436, lat: 18.4555 },
+        { id: "wp-3", label: "Upper Delta Canyon", lon: 77.412, lat: 18.4735 },
+        { id: "wp-4", label: "Neretva River Breach", lon: 77.389, lat: 18.484 },
+        { id: "wp-5", label: "Neretva Vallis Inlet", lon: 77.372, lat: 18.492 },
+      ],
+    },
   ];
 
   public static readonly SAFE_DETOUR_PRESET: WaypointInput[] = [
@@ -555,7 +589,7 @@ export class EVARoutePlannerController {
       const node = new WaypointNode({
         index: 1,
         id: wp.id,
-        label: wp.label,
+        label: "Start",
         roleTag: "Start",
         lon: wp.lon,
         lat: wp.lat,
@@ -635,14 +669,26 @@ export class EVARoutePlannerController {
         grid.inBounds(to.lon, to.lat)
       ) {
         try {
-          const astar = planEvaRoute(
-            from.lon,
-            from.lat,
-            to.lon,
-            to.lat,
-            mode,
-            Math.max(24, maxSlopeLimitDeg + 8)
-          );
+          let astar;
+          try {
+            astar = planEvaRoute(
+              from.lon,
+              from.lat,
+              to.lon,
+              to.lat,
+              mode,
+              mode === "safest" ? maxSlopeLimitDeg : Math.max(20, maxSlopeLimitDeg + 4)
+            );
+          } catch {
+            astar = planEvaRoute(
+              from.lon,
+              from.lat,
+              to.lon,
+              to.lat,
+              mode,
+              26
+            );
+          }
           if (astar.coordinates.length >= 2) {
             // Preserve exact clicked start/end coordinates + smoothed A* spine
             const step = Math.max(1, Math.floor(astar.coordinates.length / 10));
@@ -749,13 +795,13 @@ export class EVARoutePlannerController {
       const segSlp = nodeMaxSlopes[idx] ?? 0;
       const risk = RouteSegment.classifySlope(segSlp, 10, 15);
 
-      const roleTag = isFirst
+      const computedLabel = isFirst
         ? "Start"
         : isLast
           ? "End"
-          : idx === 1
-            ? "2nd Pt"
-            : `WP-${idx + 1}`;
+          : `Point ${idx + 1}`;
+
+      const roleTag = computedLabel;
 
       const badgeColor = isFirst
         ? "#22C55E"
@@ -770,7 +816,7 @@ export class EVARoutePlannerController {
       return new WaypointNode({
         index: idx + 1,
         id: wp.id,
-        label: wp.label,
+        label: computedLabel,
         roleTag,
         lon: wp.lon,
         lat: wp.lat,
@@ -797,11 +843,17 @@ export class EVARoutePlannerController {
     );
     const hazardPct = Math.max(0, 100 - safePct - cautionPct);
 
-    let minElevationM = profileSamples.length > 0 ? profileSamples[0].elevationM : -2568;
-    let maxElevationM = profileSamples.length > 0 ? profileSamples[0].elevationM : -2485;
-    for (const p of profileSamples) {
-      if (p.elevationM < minElevationM) minElevationM = p.elevationM;
-      if (p.elevationM > maxElevationM) maxElevationM = p.elevationM;
+    let minElevationM = -2568;
+    let maxElevationM = -2485;
+    if (profileSamples.length > 0) {
+      minElevationM = profileSamples[0].elevationM;
+      maxElevationM = profileSamples[0].elevationM;
+      for (const p of profileSamples) {
+        if (Number.isFinite(p.elevationM)) {
+          if (p.elevationM < minElevationM) minElevationM = p.elevationM;
+          if (p.elevationM > maxElevationM) maxElevationM = p.elevationM;
+        }
+      }
     }
     const targetElevationM =
       nodes.length > 0 ? nodes[nodes.length - 1].elevationM : -2485;

@@ -6,11 +6,17 @@
 }
 
 body {
-  background-color: #090c12;
-  color: #0f172a;
+  background-color: #0d1117;
+  color: #e6edf3;
   /* NASA Official Graphic Standards: Helvetica / Helvetica Neue */
   font-family: "Helvetica Neue", Helvetica, Arial, var(--font-sans), system-ui, sans-serif;
   overflow: hidden;
+}
+
+/* High Contrast Razor-Sharp Map Tiles */
+.ol-viewport canvas {
+  image-rendering: -webkit-optimize-contrast;
+  image-rendering: crisp-edges;
 }
 
 /* 3D Oblique Perspective Map View Effect */
